@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Client } from 'ssh2';
-import { generateSetupScript, ProjectConfig } from '@/lib/script-generator';
-import { generateDockerAppScript, DockerAppConfig } from '@/lib/docker-apps-generator';
+import { generateDeleteProjectScript } from '@/lib/project-manager';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,35 +10,29 @@ export async function POST(req: NextRequest) {
     const writer = stream.writable.getWriter();
 
     const body = await req.json();
-    const { host, username, password, projectConfig, dockerAppConfig } = body;
+    const { host, username, password, projectName } = body;
 
-    if (!host || !username || !password || (!projectConfig && !dockerAppConfig)) {
-        return NextResponse.json({ error: 'Missing credentials or config' }, { status: 400 });
+    if (!host || !username || !password || !projectName) {
+        return NextResponse.json({ error: 'Missing credentials or project name' }, { status: 400 });
     }
 
-    const scriptContent = dockerAppConfig
-        ? generateDockerAppScript(dockerAppConfig as DockerAppConfig)
-        : generateSetupScript(projectConfig as ProjectConfig);
+    const script = generateDeleteProjectScript(projectName);
 
-    const writeLog = async (msg: string, type: 'info' | 'error' | 'success' | 'json' = 'info') => {
+    const writeLog = async (msg: string, type: 'info' | 'error' | 'success' = 'info') => {
         const data = JSON.stringify({ type, message: msg }) + '\n';
         await writer.write(encoder.encode(data));
     };
 
     const sshClient = new Client();
 
-    // Run the SSH process in the background effectively
     (async () => {
         try {
-            await writeLog(`Attempting to connect to ${host}...`);
+            await writeLog(`Connecting to ${host}...`);
 
             sshClient.on('ready', () => {
                 writeLog('SSH Connection established.', 'success');
-                writeLog('Uploading and executing setup script...');
+                writeLog(`Deleting project: ${projectName}...`);
 
-                // We'll execute the script directly by passing it to 'bash -s'
-                // This avoids needing to SCP a file.
-                // We use single quotes for the bash -s command to avoid shell expansion on the local side (though here we are just sending string)
                 sshClient.exec('bash -s', (err, stream) => {
                     if (err) {
                         writeLog(`Execution error: ${err.message}`, 'error');
@@ -48,24 +41,17 @@ export async function POST(req: NextRequest) {
                         return;
                     }
 
-                    stream.on('close', (code: any, signal: any) => {
-                        writeLog(`Script process exited with code ${code}`, code === 0 ? 'success' : 'error');
+                    stream.on('close', (code: any) => {
+                        writeLog(`Process exited with code ${code}`, code === 0 ? 'success' : 'error');
                         sshClient.end();
                         writer.close();
                     }).on('data', (data: any) => {
-                        const output = data.toString();
-                        // Check for JSON block in output
-                        if (output.includes('JSON_START')) {
-                            // We might want to buffer this to parse fully, but for simpler streaming:
-                            // We will just stream it and let frontend parse if it sees the markers.
-                        }
-                        writeLog(output);
+                        writeLog(data.toString());
                     }).stderr.on('data', (data: any) => {
                         writeLog(data.toString(), 'error');
                     });
 
-                    // Write the script to stdin
-                    stream.write(scriptContent);
+                    stream.write(script);
                     stream.end();
                 });
             }).on('error', (err) => {
@@ -78,7 +64,6 @@ export async function POST(req: NextRequest) {
                 password,
                 readyTimeout: 20000,
             });
-
         } catch (error: any) {
             await writeLog(`Internal Server Error: ${error.message}`, 'error');
             await writer.close();

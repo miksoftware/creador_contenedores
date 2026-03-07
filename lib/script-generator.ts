@@ -77,6 +77,36 @@ fi
 echo "============================================"
 echo -e "\${NC}"
 
+# ============================================
+# VERIFICAR/INSTALAR DOCKER
+# ============================================
+
+if ! command -v docker &> /dev/null; then
+    echo -e "\${YELLOW}📦 Docker no encontrado. Instalando...\${NC}"
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl gnupg lsb-release > /dev/null 2>&1
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/\$(. /etc/os-release && echo "\$ID")/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/\$(. /etc/os-release && echo "\$ID") \$(. /etc/os-release && echo "\$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
+    systemctl start docker
+    systemctl enable docker
+    echo -e "\${GREEN}✓ Docker instalado correctamente\${NC}"
+else
+    echo -e "\${GREEN}✓ Docker ya está instalado: \$(docker --version)\${NC}"
+fi
+
+# Detectar si es subdominio (ej: mikpos.miksoftwarecol.com)
+# Si tiene más de 2 partes separadas por punto, es subdominio y no se agrega www
+DOMAIN_PARTS=\$(echo "\$DOMAIN" | tr '.' '\\n' | wc -l)
+if [ "\$DOMAIN_PARTS" -gt 2 ]; then
+    IS_SUBDOMAIN="true"
+else
+    IS_SUBDOMAIN="false"
+fi
+
 # Configuración de base de datos
 DB_NAME="\${PROJECT_NAME}_db"
 DB_USER="\${PROJECT_NAME}_user"
@@ -450,6 +480,12 @@ volumes:
 EOF
 fi
 
+# Si es subdominio, quitar la regla www del docker-compose
+if [ "\$IS_SUBDOMAIN" = "true" ] && [ "\$HAS_DOMAIN" = "true" ]; then
+    sed -i "s/ || Host(\`www.\$DOMAIN\`)//g" "\$PROJECT_DIR/docker-compose.yml"
+    echo -e "\${BLUE}ℹ️  Subdominio detectado: se omitió www.\$DOMAIN\${NC}"
+fi
+
 echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
 
 # ============================================
@@ -724,7 +760,7 @@ echo -e "\\\${GREEN}=========================================="
 echo "  ✅ Deploy completado exitosamente"
 echo "==========================================\\\${NC}"
 echo ""
-echo -e "\\\${BLUE}🌐 URL: \${HAS_DOMAIN:+https://\$DOMAIN}\${HAS_DOMAIN:-http://\$(curl -s ifconfig.me 2>/dev/null):\$NGINX_PORT}\\\${NC}"
+echo -e "\\\${BLUE}🌐 URL: \${HAS_DOMAIN:+https://\$DOMAIN}\${HAS_DOMAIN:-http://\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print \$1}'):\$NGINX_PORT}\\\${NC}"
 echo -e "\\\${BLUE}📅 Fecha: \\\$(date '+%Y-%m-%d %H:%M:%S')\\\${NC}"
 echo -e "\\\${BLUE}🔀 Rama: \\\$BRANCH\\\${NC}"
 echo ""
@@ -797,7 +833,7 @@ echo -e "\${GREEN}✅ Contenedores levantados\${NC}"
 echo ""
 echo -e "\${YELLOW}💾 Guardando credenciales...\${NC}"
 
-SERVER_IP=\$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "localhost")
+SERVER_IP=\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print \$1}' || echo "localhost")
 
 if [ "\$HAS_DOMAIN" = "true" ]; then
     URL_ACCESS="https://\$DOMAIN"
@@ -888,9 +924,9 @@ echo "  \\"db_name\\": \\"\$DB_NAME\\","
 echo "  \\"db_user\\": \\"\$DB_USER\\","
 echo "  \\"db_pass\\": \\"\$DB_PASS\\","
 echo "  \\"nginx_port\\": \\"\$NGINX_PORT\\","
-echo "  \\"ssl\\": \\"\${HAS_DOMAIN:+traefik}\${HAS_DOMAIN:-none}\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\","; else echo "  \\"ssl\\": \\"none\\","; fi
 echo "  \\"git_repo\\": \\"\$GIT_REPO_URL\\","
-echo "  \\"deploy_script\\": \\"\${HAS_GIT_REPO:+\$PROJECT_DIR/deploy.sh}\${HAS_GIT_REPO:-none}\\""
+if [ "\$HAS_GIT_REPO" = "true" ]; then echo "  \\"deploy_script\\": \\"\$PROJECT_DIR/deploy.sh\\""; else echo "  \\"deploy_script\\": \\"none\\""; fi
 echo "}"
 echo "JSON_END"
 
@@ -960,6 +996,35 @@ DB_NAME="\${PROJECT_NAME}_db"
 DB_USER="\${PROJECT_NAME}_user"
 DB_PASS=\$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16)
 DB_ROOT_PASS="root123"
+
+# ============================================
+# VERIFICAR/INSTALAR DOCKER
+# ============================================
+
+if ! command -v docker &> /dev/null; then
+    echo -e "\${YELLOW}📦 Docker no encontrado. Instalando...\${NC}"
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl gnupg lsb-release > /dev/null 2>&1
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/\$(. /etc/os-release && echo "\$ID")/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/\$(. /etc/os-release && echo "\$ID") \$(. /etc/os-release && echo "\$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
+    systemctl start docker
+    systemctl enable docker
+    echo -e "\${GREEN}✓ Docker instalado correctamente\${NC}"
+else
+    echo -e "\${GREEN}✓ Docker ya está instalado: \$(docker --version)\${NC}"
+fi
+
+# Detectar si es subdominio (ej: mikpos.miksoftwarecol.com)
+DOMAIN_PARTS=\$(echo "\$DOMAIN" | tr '.' '\\n' | wc -l)
+if [ "\$DOMAIN_PARTS" -gt 2 ]; then
+    IS_SUBDOMAIN="true"
+else
+    IS_SUBDOMAIN="false"
+fi
 
 # ============================================
 # VERIFICAR/INSTALAR TRAEFIK SI HAY DOMINIO
@@ -1553,6 +1618,13 @@ volumes:
 EOF
     fi
 fi
+
+# Si es subdominio, quitar la regla www del docker-compose
+if [ "\$IS_SUBDOMAIN" = "true" ] && [ "\$HAS_DOMAIN" = "true" ]; then
+    sed -i "s/ || Host(\`www.\$DOMAIN\`)//g" "\$PROJECT_DIR/docker-compose.yml"
+    echo -e "\${BLUE}ℹ️  Subdominio detectado: se omitió www.\$DOMAIN\${NC}"
+fi
+
 echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
 
 # ============================================
@@ -1998,8 +2070,102 @@ DEPLOY_SCRIPT2
     echo -e "\${GREEN}✓ deploy.sh creado\${NC}"
 
 else
-    # PHP puro: crear archivo de prueba si no hay repo
-    if [ "\$HAS_GIT_REPO" != "true" ]; then
+    # PHP puro
+    if [ "\$HAS_GIT_REPO" = "true" ]; then
+        # Crear deploy.sh para PHP puro con repositorio Git
+        echo ""
+        echo -e "\${YELLOW}� Creando script deploy.sh...\${NC}"
+
+        cat > "\$PROJECT_DIR/deploy.sh" <<DEPLOY_SCRIPT
+#!/bin/bash
+
+# ============================================
+# Script de Deploy Automático
+# Proyecto: \$PROJECT_NAME
+# Repositorio: \$GIT_REPO_URL
+# Uso: bash deploy.sh o: cd /root/proyectos/\$PROJECT_NAME && ./deploy.sh
+# ============================================
+
+echo "=========================================="
+echo "  🚀 Deploy \$PROJECT_NAME"
+echo "  📦 Repo: \$GIT_REPO_URL"
+echo "=========================================="
+echo ""
+
+GREEN='\\033[0;32m'
+RED='\\033[0;31m'
+YELLOW='\\033[1;33m'
+BLUE='\\033[0;34m'
+NC='\\033[0m'
+
+PROJECT_DIR="/root/proyectos/\$PROJECT_NAME"
+PUBLIC_DIR="\\\$PROJECT_DIR/public"
+
+cd \\\$PUBLIC_DIR
+
+echo -e "\\\${BLUE}📁 Directorio: \\\$(pwd)\\\${NC}"
+echo ""
+
+echo -e "\\\${YELLOW}[1/6] 💾 Guardando cambios locales...\\\${NC}"
+git stash --quiet 2>/dev/null || true
+echo -e "\\\${GREEN}✓ Cambios locales guardados\\\${NC}"
+
+echo ""
+echo -e "\\\${YELLOW}[2/6] ⬇️  Descargando cambios desde Git...\\\${NC}"
+
+BRANCH=\\\$(git rev-parse --abbrev-ref HEAD)
+if git pull origin "\\\$BRANCH" 2>&1; then
+    echo -e "\\\${GREEN}✓ Cambios descargados desde rama '\\\$BRANCH'\\\${NC}"
+else
+    echo -e "\\\${RED}✗ Error al descargar cambios\\\${NC}"
+    exit 1
+fi
+
+LAST_COMMIT=\\\$(git log -1 --pretty=format:'%h - %s (%ar) por %an')
+echo -e "\\\${BLUE}    📝 Último commit: \\\$LAST_COMMIT\\\${NC}"
+
+echo ""
+echo -e "\\\${YELLOW}[3/6] 🔄 Restaurando configuración local...\\\${NC}"
+git stash pop --quiet 2>/dev/null || true
+echo -e "\\\${GREEN}✓ Configuración restaurada\\\${NC}"
+
+echo ""
+echo -e "\\\${YELLOW}[4/6] 🔐 Ajustando permisos...\\\${NC}"
+chown -R www-data:www-data \\\$PUBLIC_DIR
+find \\\$PUBLIC_DIR -type d -exec chmod 755 {} \\; 2>/dev/null
+find \\\$PUBLIC_DIR -type f -exec chmod 644 {} \\; 2>/dev/null
+echo -e "\\\${GREEN}✓ Permisos ajustados\\\${NC}"
+
+echo ""
+echo -e "\\\${YELLOW}[5/6] 🧹 Limpiando caché...\\\${NC}"
+docker exec \${PROJECT_NAME}_php find /tmp -name "sess_*" -mtime +1 -delete 2>/dev/null || true
+echo -e "\\\${GREEN}✓ Caché limpiado\\\${NC}"
+
+echo ""
+echo -e "\\\${YELLOW}[6/6] 🔄 Reiniciando servicios...\\\${NC}"
+cd \\\$PROJECT_DIR
+docker compose restart php nginx --quiet
+sleep 3
+echo -e "\\\${GREEN}✓ Servicios reiniciados\\\${NC}"
+
+echo ""
+echo -e "\\\${GREEN}=========================================="
+echo "  ✅ Deploy completado exitosamente"
+echo "==========================================\\\${NC}"
+echo ""
+if [ "\$HAS_DOMAIN" = "true" ]; then
+    echo -e "\\\${BLUE}🌐 URL: https://\$DOMAIN\\\${NC}"
+else
+    echo -e "\\\${BLUE}🌐 URL: http://\\\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print \\\$1}'):\$NGINX_PORT\\\${NC}"
+fi
+echo -e "\\\${BLUE}📅 Fecha: \\\$(date '+%Y-%m-%d %H:%M:%S')\\\${NC}"
+echo -e "\\\${BLUE}🔀 Rama: \\\$BRANCH\\\${NC}"
+echo ""
+DEPLOY_SCRIPT
+
+        chmod +x "\$PROJECT_DIR/deploy.sh"
+        echo -e "\${GREEN}✓ deploy.sh creado en \$PROJECT_DIR/deploy.sh\${NC}"
+    else
         echo ""
         echo -e "\${YELLOW}📄 Creando archivo de prueba...\${NC}"
         
@@ -2025,7 +2191,7 @@ echo -e "\${YELLOW}💾 Guardando credenciales...\${NC}"
 # Desactivar set -e temporalmente para que no falle al guardar credenciales
 set +e
 
-SERVER_IP=\$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || echo "localhost")
+SERVER_IP=\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print \$1}' || echo "localhost")
 
 if [ "\$HAS_DOMAIN" = "true" ]; then
     URL_ACCESS="https://\$DOMAIN"
@@ -2066,7 +2232,7 @@ echo ""
 echo "SSL: \$SSL_STATUS"
 } > "\$PROJECT_DIR/CREDENCIALES.txt"
 
-if [ "\$IS_LARAVEL" = "true" ] && [ "\$HAS_GIT_REPO" = "true" ]; then
+if [ "\$HAS_GIT_REPO" = "true" ]; then
     {
     echo ""
     echo "REPOSITORIO GIT:"
@@ -2076,6 +2242,11 @@ if [ "\$IS_LARAVEL" = "true" ] && [ "\$HAS_GIT_REPO" = "true" ]; then
     echo ""
     echo "Para actualizar el proyecto:"
     echo "  cd \$PROJECT_DIR && ./deploy.sh"
+    } >> "\$PROJECT_DIR/CREDENCIALES.txt"
+fi
+
+if [ "\$IS_LARAVEL" = "true" ] && [ "\$HAS_GIT_REPO" = "true" ]; then
+    {
     echo ""
     echo "SERVICIOS:"
     echo "  Redis: \${USE_REDIS:-No}"
@@ -2084,6 +2255,12 @@ if [ "\$IS_LARAVEL" = "true" ] && [ "\$HAS_GIT_REPO" = "true" ]; then
     echo "  - Los archivos del proyecto estan en: \$PROJECT_DIR/src/"
     echo "  - El .env de Laravel esta en: \$PROJECT_DIR/src/.env"
     echo "  - Los logs de Laravel: docker exec \${PROJECT_NAME}_php tail -f /var/www/html/storage/logs/laravel.log"
+    } >> "\$PROJECT_DIR/CREDENCIALES.txt"
+elif [ "\$HAS_GIT_REPO" = "true" ]; then
+    {
+    echo ""
+    echo "NOTAS:"
+    echo "  - Los archivos del proyecto estan en: \$PROJECT_DIR/public/"
     } >> "\$PROJECT_DIR/CREDENCIALES.txt"
 fi
 
@@ -2119,7 +2296,7 @@ echo -e "\${NC}"
 docker compose ps
 echo ""
 echo -e "\${GREEN}🌐 URL: \$URL_ACCESS\${NC}"
-if [ "\$IS_LARAVEL" = "true" ] && [ "\$HAS_GIT_REPO" = "true" ]; then
+if [ "\$HAS_GIT_REPO" = "true" ]; then
     echo -e "\${GREEN}📦 Repositorio: \$GIT_REPO_URL (\$GIT_BRANCH)\${NC}"
     echo -e "\${GREEN}📜 Deploy script: \$PROJECT_DIR/deploy.sh\${NC}"
 fi
@@ -2140,11 +2317,11 @@ echo "  \\"db_name\\": \\"\$DB_NAME\\","
 echo "  \\"db_user\\": \\"\$DB_USER\\","
 echo "  \\"db_pass\\": \\"\$DB_PASS\\","
 echo "  \\"nginx_port\\": \\"\$NGINX_PORT\\","
-echo "  \\"ssl\\": \\"\${HAS_DOMAIN:+traefik}\${HAS_DOMAIN:-none}\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\","; else echo "  \\"ssl\\": \\"none\\","; fi
 echo "  \\"git_repo\\": \\"\$GIT_REPO_URL\\","
 echo "  \\"git_branch\\": \\"\$GIT_BRANCH\\","
 echo "  \\"redis\\": \\"\$USE_REDIS\\","
-echo "  \\"deploy_script\\": \\"\${IS_LARAVEL:+\$PROJECT_DIR/deploy.sh}\${IS_LARAVEL:-none}\\""
+if [ "\$HAS_GIT_REPO" = "true" ]; then echo "  \\"deploy_script\\": \\"\$PROJECT_DIR/deploy.sh\\""; else echo "  \\"deploy_script\\": \\"none\\""; fi
 echo "}"
 echo "JSON_END"
 
