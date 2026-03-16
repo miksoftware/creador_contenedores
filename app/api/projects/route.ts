@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
         }, 30000);
 
         sshClient.on('ready', () => {
-            sshClient.exec('bash -s', (err, stream) => {
+            sshClient.exec('bash --login -s', (err, stream) => {
                 if (err) {
                     clearTimeout(timeout);
                     sshClient.end();

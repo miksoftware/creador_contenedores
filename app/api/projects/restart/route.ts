@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
                 writeLog('SSH Connection established.', 'success');
                 writeLog(`Restarting project: ${projectName}...`);
 
-                sshClient.exec('bash -s', (err, stream) => {
+                sshClient.exec('bash --login -s', (err, stream) => {
                     if (err) {
                         writeLog(`Execution error: ${err.message}`, 'error');
                         sshClient.end();

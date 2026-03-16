@@ -154,7 +154,7 @@ TRAEFIK_CONFIG
 name: traefik
 services:
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.4
     container_name: traefik
     restart: unless-stopped
     security_opt:

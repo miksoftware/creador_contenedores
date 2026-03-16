@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
                 // We'll execute the script directly by passing it to 'bash -s'
                 // This avoids needing to SCP a file.
                 // We use single quotes for the bash -s command to avoid shell expansion on the local side (though here we are just sending string)
-                sshClient.exec('bash -s', (err, stream) => {
+                sshClient.exec('bash --login -s', (err, stream) => {
                     if (err) {
                         writeLog(`Execution error: ${err.message}`, 'error');
                         sshClient.end();

@@ -71,6 +71,14 @@ export default function DeployDashboard() {
     const [manageConnected, setManageConnected] = useState(false);
     const deleteLogsEndRef = useRef<HTMLDivElement>(null);
 
+    // Migration State
+    const [migratingProject, setMigratingProject] = useState<{ name: string; type: string } | null>(null);
+    const [targetCreds, setTargetCreds] = useState({ host: "", username: "root", password: "" });
+    const [newDomain, setNewDomain] = useState("");
+    const [migrationLogs, setMigrationLogs] = useState<string[]>([]);
+    const [isMigrating, setIsMigrating] = useState(false);
+    const migrationLogsEndRef = useRef<HTMLDivElement>(null);
+
     // Config State
     const [config, setConfig] = useState({
         projectName: "",
@@ -467,6 +475,97 @@ export default function DeployDashboard() {
             setRestartingProject(null);
         }
     };
+
+    // Auto-scroll migration logs
+    useEffect(() => {
+        migrationLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [migrationLogs]);
+
+    const handleMigrate = async () => {
+        if (!migratingProject || !targetCreds.host || !targetCreds.password) return;
+        
+        setIsMigrating(true);
+        setMigrationLogs([`🚀 Iniciando migración de ${migratingProject.name}...`]);
+
+        try {
+            const res = await fetch('/api/projects/migrate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sourceCreds: {
+                        host: creds.host,
+                        username: creds.username,
+                        password: creds.password,
+                    },
+                    targetCreds,
+                    projectName: migratingProject.name,
+                    projectType: migratingProject.type,
+                    newDomain: newDomain || null,
+                }),
+            });
+
+            if (!res.body) throw new Error("No response string from API");
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            
+            let jsonBuffer = "";
+            let isCapturingJson = false;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const text = decoder.decode(value);
+                const lines = text.split('\n');
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+
+                    try {
+                        const parsed = JSON.parse(line);
+                        if (parsed.message) {
+                            setMigrationLogs(prev => [...prev, parsed.message]);
+                        } else {
+                            if (parsed.success !== undefined) {
+                                setMigrationLogs(prev => [...prev, parsed.success ? "✅ Migración exitosa" : "❌ Migración fallida"]);
+                            }
+                        }
+                    } catch {
+                        // Handle raw lines or JSON wrappers
+                        if (line.includes("JSON_START")) {
+                            isCapturingJson = true;
+                            jsonBuffer = "";
+                        } else if (line.includes("JSON_END")) {
+                            isCapturingJson = false;
+                            try {
+                                const cleanJson = jsonBuffer.replace(/\[\d+;?\d*m/g, '').replace(/\[0m/g, '').replace(/\s+/g, ' ').trim();
+                                const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
+                                if (jsonMatch) {
+                                    const parsed = JSON.parse(jsonMatch[0]);
+                                    if (parsed.message) {
+                                        setMigrationLogs(prev => [...prev, parsed.message]);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error("Error parsing migrate json result", e);
+                            }
+                        } else if (isCapturingJson) {
+                            jsonBuffer += line + " ";
+                        } else {
+                            // Render normal log line
+                           setMigrationLogs(prev => [...prev, line.replace(/\[[\d;]+m/g, '').trim()]);
+                        }
+                    }
+                }
+            }
+        } catch (error: any) {
+            setMigrationLogs(prev => [...prev, `❌ Error: ${error.message}`]);
+        } finally {
+            setIsMigrating(false);
+        }
+    };
+
     return (
         <div className="w-full max-w-6xl mx-auto px-4 py-8 md:py-16">
             {/* Hero Header */}
@@ -1330,6 +1429,29 @@ export default function DeployDashboard() {
                                                                         )}
                                                                     </motion.button>
                                                                 )}
+                                                                
+                                                                {/* Migrate button */}
+                                                                {deleteConfirm !== project.name && (
+                                                                     <motion.button
+                                                                     whileHover={{ scale: 1.05 }}
+                                                                     whileTap={{ scale: 0.95 }}
+                                                                     onClick={() => {
+                                                                         setMigratingProject({ name: project.name, type: project.type });
+                                                                         setTargetCreds({ host: "", username: "root", password: "" });
+                                                                         setNewDomain("");
+                                                                         setMigrationLogs([]);
+                                                                     }}
+                                                                     disabled={isRestarting || isDeleting}
+                                                                     className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                                                                     style={{
+                                                                         background: 'rgba(139, 92, 246, 0.1)',
+                                                                         border: '1px solid rgba(139, 92, 246, 0.2)',
+                                                                         color: '#a78bfa',
+                                                                     }}
+                                                                 >
+                                                                     <Upload className="w-3.5 h-3.5" /> Migrar
+                                                                 </motion.button>
+                                                                )}
                                                             </div>
                                                         </motion.div>
                                                     );
@@ -1342,6 +1464,146 @@ export default function DeployDashboard() {
                         </div>
                     </motion.div>
                 )}
+
+                {/* ===== MIGRATION MODAL ===== */}
+                <AnimatePresence>
+                    {migratingProject && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+                        >
+                            <motion.div
+                                initial={{ scale: 0.95, y: 20 }}
+                                animate={{ scale: 1, y: 0 }}
+                                exit={{ scale: 0.95, y: 20 }}
+                                className="w-full max-w-3xl rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+                                style={{
+                                    background: 'linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.8))',
+                                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05) inset'
+                                }}
+                            >
+                                {/* Modal Header */}
+                                <div className="px-6 py-4 flex items-center justify-between border-b border-white/10" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                    <h3 className="text-lg font-bold text-white flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center">
+                                            <Upload className="w-4 h-4 text-white" />
+                                        </div>
+                                        Clonar / Migrar Proyecto: <span className="text-purple-400">{migratingProject.name}</span>
+                                    </h3>
+                                    <button
+                                        onClick={() => !isMigrating && setMigratingProject(null)}
+                                        disabled={isMigrating}
+                                        className="text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+                                    >
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                {/* Modal Body */}
+                                <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
+                                    <div className="grid md:grid-cols-2 gap-6">
+                                        {/* Left Side - Target Server Config */}
+                                        <div className="space-y-4">
+                                            <h4 className="text-sm font-semibold text-gray-300 border-b border-white/10 pb-2 mb-3">Servidor de Destino</h4>
+                                            
+                                            <div className="space-y-1.5">
+                                                <label className="block text-xs font-medium text-gray-400">IP / Host</label>
+                                                <input
+                                                    type="text"
+                                                    disabled={isMigrating}
+                                                    placeholder="Target Server IP"
+                                                    value={targetCreds.host}
+                                                    onChange={(e) => setTargetCreds({ ...targetCreds, host: e.target.value })}
+                                                    className="w-full px-4 py-2.5 rounded-xl text-white placeholder-gray-500 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-300 disabled:opacity-50"
+                                                    style={{ background: 'rgba(0, 0, 0, 0.4)', border: '1px solid rgba(255, 255, 255, 0.1)' }}
+                                                />
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <div className="space-y-1.5">
+                                                    <label className="block text-xs font-medium text-gray-400">User</label>
+                                                    <input
+                                                        type="text"
+                                                        disabled={isMigrating}
+                                                        value={targetCreds.username}
+                                                        onChange={(e) => setTargetCreds({ ...targetCreds, username: e.target.value })}
+                                                        className="w-full px-4 py-2.5 rounded-xl text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-300 disabled:opacity-50"
+                                                        style={{ background: 'rgba(0, 0, 0, 0.4)', border: '1px solid rgba(255, 255, 255, 0.1)' }}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    <label className="block text-xs font-medium text-gray-400">Password</label>
+                                                    <input
+                                                        type="password"
+                                                        disabled={isMigrating}
+                                                        placeholder="••••••••"
+                                                        value={targetCreds.password}
+                                                        onChange={(e) => setTargetCreds({ ...targetCreds, password: e.target.value })}
+                                                        className="w-full px-4 py-2.5 rounded-xl text-white placeholder-gray-500 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-300 disabled:opacity-50"
+                                                        style={{ background: 'rgba(0, 0, 0, 0.4)', border: '1px solid rgba(255, 255, 255, 0.1)' }}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* Domain Injector - Available for all project types */}
+                                            <div className="space-y-1.5 pt-2">
+                                                <h4 className="text-sm font-semibold text-gray-300 border-b border-white/10 pb-2 mb-3 mt-2">Configuración del Proyecto</h4>
+                                                <label className="block text-xs font-medium text-gray-400">Nuevo Dominio <span className="text-gray-500">(Opcional)</span></label>
+                                                <input
+                                                    type="text"
+                                                    disabled={isMigrating}
+                                                    placeholder="nuevo-dominio.com"
+                                                    value={newDomain}
+                                                    onChange={(e) => setNewDomain(e.target.value)}
+                                                    className="w-full px-4 py-2.5 rounded-xl text-white placeholder-gray-500 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all duration-300 disabled:opacity-50"
+                                                    style={{ background: 'rgba(0, 0, 0, 0.4)', border: '1px solid rgba(255, 255, 255, 0.1)' }}
+                                                />
+                                                <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">Si provees un dominio, se configurará automáticamente con <code className="text-purple-400/80 bg-purple-400/10 px-1 rounded">Traefik</code> (SSL/HTTPS). Si el proyecto ya tiene dominio, se reemplazará. Si no tiene, se inyectarán las labels de Traefik al <code className="text-purple-400/80 bg-purple-400/10 px-1 rounded">docker-compose.yml</code>.</p>
+                                            </div>
+                                            
+                                            <motion.button
+                                                whileHover={{ scale: 1.02 }}
+                                                whileTap={{ scale: 0.98 }}
+                                                onClick={handleMigrate}
+                                                disabled={isMigrating || !targetCreds.host || !targetCreds.password}
+                                                className="w-full mt-4 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 text-white transition-all disabled:opacity-50"
+                                                style={{
+                                                    background: 'linear-gradient(135deg, #a855f7, #6366f1)',
+                                                    boxShadow: '0 10px 30px -10px rgba(168, 85, 247, 0.4)',
+                                                }}
+                                            >
+                                                {isMigrating ? <><Loader2 className="w-4 h-4 animate-spin" /> Migrando...</> : <><Rocket className="w-4 h-4 fill-current"/> Iniciar Migración</>}
+                                            </motion.button>
+                                        </div>
+
+                                        {/* Right Side - Logs */}
+                                        <div className="flex flex-col h-[350px] rounded-xl overflow-hidden border border-white/10" style={{ background: 'rgba(0,0,0,0.6)' }}>
+                                            <div className="px-4 py-2 border-b border-white/10" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                                                <span className="text-xs text-gray-400 font-mono flex items-center gap-2"><Terminal className="w-3.5 h-3.5" /> Migration Terminal</span>
+                                            </div>
+                                            <div className="p-4 flex-1 overflow-y-auto custom-scrollbar font-mono text-xs">
+                                                {migrationLogs.length === 0 ? (
+                                                    <div className="text-gray-600 h-full flex items-center justify-center italic">Esperando iniciar...</div>
+                                                ) : (
+                                                    migrationLogs.map((log, i) => (
+                                                        <div key={i} className={`mb-1.5 break-all ${log.includes('❌') ? 'text-red-400' : log.includes('✅') || log.includes('✓') ? 'text-green-400' : 'text-gray-300'}`}>
+                                                            <span className="text-purple-500 mr-2 select-none">❯</span>{log}
+                                                        </div>
+                                                    ))
+                                                )}
+                                                <div ref={migrationLogsEndRef} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+                
                 {(step === "deploying" || step === "success" || step === "error") && (
                     <motion.div
                         key="console"
