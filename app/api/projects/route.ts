@@ -85,6 +85,11 @@ export async function POST(req: NextRequest) {
             username,
             password,
             readyTimeout: 20000,
+            tryKeyboard: true,
+        });
+
+        sshClient.on('keyboard-interactive', (name: any, instructions: any, instructionsLang: any, prompts: any, finish: any) => {
+            finish([password]);
         });
     });
 }

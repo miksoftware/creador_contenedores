@@ -94,12 +94,15 @@ export async function POST(req: NextRequest) {
                     resolve();
                 }).on('error', (err) => {
                     reject(new Error(`Credenciales de destino inválidas (${targetCreds.host}): ${err.message}`));
+                }).on('keyboard-interactive', (name: any, instructions: any, instructionsLang: any, prompts: any, finish: any) => {
+                    finish([targetCreds.password]);
                 }).connect({
                     host: targetCreds.host,
                     port: 22,
                     username: targetCreds.username,
                     password: targetCreds.password,
                     readyTimeout: 20000,
+                    tryKeyboard: true,
                 });
             });
             await writeLog(`✓ Servidor de destino válido.`);
@@ -161,12 +164,15 @@ export async function POST(req: NextRequest) {
             sourceClient = new Client();
             
             await new Promise<void>((resolve, reject) => {
-                sourceClient!.on('ready', resolve).on('error', reject).connect({
+                sourceClient!.on('ready', resolve).on('error', reject).on('keyboard-interactive', (name: any, instructions: any, instructionsLang: any, prompts: any, finish: any) => {
+                    finish([sourceCreds.password]);
+                }).connect({
                     host: sourceCreds.host,
                     port: 22,
                     username: sourceCreds.username,
                     password: sourceCreds.password,
                     readyTimeout: 20000,
+                    tryKeyboard: true,
                 });
             });
             await writeLog(`[1/4] ✓ Conexión exitosa a servidor de origen.`);

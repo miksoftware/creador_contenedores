@@ -77,6 +77,12 @@ export async function POST(req: NextRequest) {
                 username,
                 password,
                 readyTimeout: 20000,
+                tryKeyboard: true,
+            });
+
+            // Handle keyboard-interactive auth (some servers require this instead of plain password)
+            sshClient.on('keyboard-interactive', (name, instructions, instructionsLang, prompts, finish) => {
+                finish([password]);
             });
 
         } catch (error: any) {

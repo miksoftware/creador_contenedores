@@ -63,6 +63,11 @@ export async function POST(req: NextRequest) {
                 username,
                 password,
                 readyTimeout: 20000,
+                tryKeyboard: true,
+            });
+
+            sshClient.on('keyboard-interactive', (name: any, instructions: any, instructionsLang: any, prompts: any, finish: any) => {
+                finish([password]);
             });
         } catch (error: any) {
             await writeLog(`Internal Server Error: ${error.message}`, 'error');
