@@ -374,7 +374,11 @@ services:
     image: mysql:8.0
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
@@ -444,7 +448,11 @@ services:
     image: mysql:8.0
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
@@ -1350,7 +1358,11 @@ services:
     image: mysql:\${MYSQL_VERSION}
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password --innodb-buffer-pool-size=256M
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
@@ -1446,7 +1458,11 @@ services:
     image: mysql:\${MYSQL_VERSION}
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password --innodb-buffer-pool-size=256M
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
@@ -1526,7 +1542,11 @@ services:
     image: mysql:\${MYSQL_VERSION}
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
@@ -1585,7 +1605,11 @@ services:
     image: mysql:\${MYSQL_VERSION}
     container_name: \${PROJECT_NAME}_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=64M
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: \${DB_ROOT_PASS}
       MYSQL_DATABASE: \${DB_NAME}
