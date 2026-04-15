@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
         ? generateDockerAppScript(dockerAppConfig as DockerAppConfig)
         : generateSetupScript(projectConfig as ProjectConfig);
 
+    // Inject the host IP used for SSH so scripts show the correct IP
+    const finalScript = `export DEPLOY_HOST_IP="${host}"\n` + scriptContent;
+
     const writeLog = async (msg: string, type: 'info' | 'error' | 'success' | 'json' = 'info') => {
         const data = JSON.stringify({ type, message: msg }) + '\n';
         await writer.write(encoder.encode(data));
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
                     });
 
                     // Write the script to stdin
-                    stream.write(scriptContent);
+                    stream.write(finalScript);
                     stream.end();
                 });
             }).on('error', (err) => {

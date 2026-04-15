@@ -104,6 +104,7 @@ export default function DeployDashboard() {
         projectName: "",
         domain: "",
         forceOverwrite: false,
+        migrateFromEvoApi: false,
     });
 
     // SQL File state
@@ -812,6 +813,29 @@ export default function DeployDashboard() {
                                                     <p className="text-xs text-gray-500 truncate">{appConfig.forceOverwrite ? '⚠️ Will delete existing' : 'Enable to reinstall'}</p>
                                                 </div>
                                             </label>
+
+                                            {/* Migrate from Evolution API (only for Evolution Go) */}
+                                            {appConfig.appName === 'evolution-go' && (
+                                                <label
+                                                    className="flex items-center gap-3 cursor-pointer group p-3 rounded-xl transition-all duration-300"
+                                                    style={{
+                                                        background: appConfig.migrateFromEvoApi ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255, 255, 255, 0.02)',
+                                                        border: appConfig.migrateFromEvoApi ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid rgba(255, 255, 255, 0.05)',
+                                                    }}
+                                                >
+                                                    <div
+                                                        className="relative w-10 h-6 rounded-full transition-all duration-300 flex-shrink-0"
+                                                        style={{ background: appConfig.migrateFromEvoApi ? 'linear-gradient(135deg, #3b82f6, #8b5cf6)' : 'rgba(255, 255, 255, 0.1)' }}
+                                                    >
+                                                        <div className="absolute top-1 w-4 h-4 rounded-full bg-white shadow-md transition-all duration-300" style={{ left: appConfig.migrateFromEvoApi ? '22px' : '4px' }} />
+                                                    </div>
+                                                    <input type="checkbox" checked={appConfig.migrateFromEvoApi} onChange={(e) => setAppConfig({ ...appConfig, migrateFromEvoApi: e.target.checked })} className="sr-only" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <span className={`text-sm font-medium ${appConfig.migrateFromEvoApi ? 'text-blue-400' : 'text-gray-400'}`}>Migrar desde Evolution API</span>
+                                                        <p className="text-xs text-gray-500 truncate">{appConfig.migrateFromEvoApi ? '🔄 Detendrá Evo API y reutilizará puerto' : 'Instalar junto a Evo API existente'}</p>
+                                                    </div>
+                                                </label>
+                                            )}
                                         </div>
                                     ) : (
                                         <div className="space-y-5">

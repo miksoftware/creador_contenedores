@@ -768,7 +768,7 @@ echo -e "\\\${GREEN}=========================================="
 echo "  ✅ Deploy completado exitosamente"
 echo "==========================================\\\${NC}"
 echo ""
-echo -e "\\\${BLUE}🌐 URL: \${HAS_DOMAIN:+https://\$DOMAIN}\${HAS_DOMAIN:-http://\$(hostname -I | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null):\$NGINX_PORT}\\\${NC}"
+echo -e "\\\${BLUE}🌐 URL: \${HAS_DOMAIN:+https://\$DOMAIN}\${HAS_DOMAIN:-http://\${DEPLOY_HOST_IP:-\$(hostname -I | awk '{print \$1}')}:\$NGINX_PORT}\\\${NC}"
 echo -e "\\\${BLUE}📅 Fecha: \\\$(date '+%Y-%m-%d %H:%M:%S')\\\${NC}"
 echo -e "\\\${BLUE}🔀 Rama: \\\$BRANCH\\\${NC}"
 echo ""
@@ -841,7 +841,7 @@ echo -e "\${GREEN}✅ Contenedores levantados\${NC}"
 echo ""
 echo -e "\${YELLOW}💾 Guardando credenciales...\${NC}"
 
-SERVER_IP=\$(hostname -I | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || echo "localhost")
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
 
 if [ "\$HAS_DOMAIN" = "true" ]; then
     URL_ACCESS="https://\$DOMAIN"
@@ -2180,7 +2180,7 @@ echo ""
 if [ "\$HAS_DOMAIN" = "true" ]; then
     echo -e "\\\${BLUE}🌐 URL: https://\$DOMAIN\\\${NC}"
 else
-    echo -e "\\\${BLUE}🌐 URL: http://\\\$(hostname -I | awk '{print \\\$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null):\$NGINX_PORT\\\${NC}"
+    echo -e "\\\${BLUE}🌐 URL: http://\\\${DEPLOY_HOST_IP:-\\\$(hostname -I | awk '{print \\\$1}')}:\$NGINX_PORT\\\${NC}"
 fi
 echo -e "\\\${BLUE}📅 Fecha: \\\$(date '+%Y-%m-%d %H:%M:%S')\\\${NC}"
 echo -e "\\\${BLUE}🔀 Rama: \\\$BRANCH\\\${NC}"
@@ -2215,7 +2215,7 @@ echo -e "\${YELLOW}💾 Guardando credenciales...\${NC}"
 # Desactivar set -e temporalmente para que no falle al guardar credenciales
 set +e
 
-SERVER_IP=\$(hostname -I | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || echo "localhost")
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
 
 if [ "\$HAS_DOMAIN" = "true" ]; then
     URL_ACCESS="https://\$DOMAIN"

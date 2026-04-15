@@ -1,30 +1,37 @@
-export type DockerApp = 'n8n' | 'odoo' | 'evolution-api' | 'uptime-kuma' | 'portainer';
+export type DockerApp = 'n8n' | 'odoo' | 'evolution-api' | 'evolution-go' | 'uptime-kuma' | 'portainer' | 'crowdsec' | 'ntopng';
 
 export type DockerAppConfig = {
   appName: DockerApp;
   projectName: string;
   domain: string;
   forceOverwrite?: boolean;
+  migrateFromEvoApi?: boolean;
 };
 
 export const DOCKER_APPS: Record<DockerApp, { label: string; description: string; icon: string; defaultPort: number; hasDb: boolean }> = {
   'n8n': { label: 'n8n', description: 'Workflow Automation', icon: '🔄', defaultPort: 5678, hasDb: false },
   'odoo': { label: 'Odoo', description: 'ERP & CRM', icon: '📊', defaultPort: 8069, hasDb: true },
   'evolution-api': { label: 'Evolution API', description: 'WhatsApp API', icon: '💬', defaultPort: 8080, hasDb: true },
+  'evolution-go': { label: 'Evolution Go', description: 'WhatsApp API (Go)', icon: '🚀', defaultPort: 8080, hasDb: true },
   'uptime-kuma': { label: 'Uptime Kuma', description: 'Server Monitoring', icon: '📡', defaultPort: 3001, hasDb: false },
   'portainer': { label: 'Portainer', description: 'Docker Management', icon: '🐳', defaultPort: 9000, hasDb: false },
+  'crowdsec': { label: 'CrowdSec', description: 'Security Engine & Firewall', icon: '🛡️', defaultPort: 8080, hasDb: false },
+  'ntopng': { label: 'ntopng', description: 'Network Traffic Monitor', icon: '🌐', defaultPort: 3000, hasDb: false },
 };
 
 export function generateDockerAppScript(config: DockerAppConfig): string {
-  const { appName, projectName, domain, forceOverwrite } = config;
+  const { appName, projectName, domain, forceOverwrite, migrateFromEvoApi } = config;
   const hasDomain = !!domain && domain !== 'localhost' && domain.trim() !== '';
 
   switch (appName) {
     case 'n8n': return generateN8nScript(projectName, domain, hasDomain, forceOverwrite);
     case 'odoo': return generateOdooScript(projectName, domain, hasDomain, forceOverwrite);
     case 'evolution-api': return generateEvolutionScript(projectName, domain, hasDomain, forceOverwrite);
+    case 'evolution-go': return generateEvolutionGoScript(projectName, domain, hasDomain, forceOverwrite, migrateFromEvoApi);
     case 'uptime-kuma': return generateUptimeKumaScript(projectName, domain, hasDomain, forceOverwrite);
     case 'portainer': return generatePortainerScript(projectName, domain, hasDomain, forceOverwrite);
+    case 'crowdsec': return generateCrowdSecScript(projectName, domain, hasDomain, forceOverwrite);
+    case 'ntopng': return generateNtopngScript(projectName, domain, hasDomain, forceOverwrite);
     default: throw new Error(`App ${appName} not supported`);
   }
 }
@@ -270,7 +277,7 @@ function jsonOutputBlock(appLabel: string): string {
 # ============================================
 
 set +e
-SERVER_IP=\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print \$1}' || echo "localhost")
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
 
 if [ "\$HAS_DOMAIN" = "true" ]; then
     URL_ACCESS="https://\$DOMAIN"
@@ -519,7 +526,7 @@ echo -e "\${GREEN}✓ Odoo está corriendo\${NC}"
 
 # Guardar credenciales
 set +e
-SERVER_IP=\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print \$1}' || echo "localhost")
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
 if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
 {
 echo "PROYECTO: \$PROJECT_NAME"
@@ -695,7 +702,7 @@ echo -e "\${GREEN}✓ Evolution API está corriendo\${NC}"
 
 # Guardar credenciales
 set +e
-SERVER_IP=\$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print \$1}' || echo "localhost")
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
 if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
 {
 echo "PROYECTO: \$PROJECT_NAME"
@@ -732,6 +739,223 @@ echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
 echo "  \\"domain\\": \\"\$DOMAIN\\","
 echo "  \\"project_type\\": \\"docker-app\\","
 echo "  \\"app_name\\": \\"Evolution API\\","
+echo "  \\"url\\": \\"\$URL_ACCESS\\","
+echo "  \\"app_port\\": \\"\$APP_PORT\\","
+echo "  \\"api_key\\": \\"\$API_KEY\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\""; else echo "  \\"ssl\\": \\"none\\""; fi
+echo "}"
+echo "JSON_END"
+`;
+}
+
+// ============================================
+// EVOLUTION GO
+// ============================================
+function generateEvolutionGoScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean, migrateFromEvoApi?: boolean): string {
+  return scriptHeader(projectName, 'Evolution Go', domain, hasDomain)
+    + traefikSetupBlock()
+    + projectCheckBlock(forceOverwrite)
+    + (migrateFromEvoApi ? `
+# ============================================
+# MIGRAR DESDE EVOLUTION API
+# ============================================
+
+echo ""
+echo -e "\${YELLOW}🔄 Buscando instancia de Evolution API para migrar...\${NC}"
+
+MIGRATE_FROM=""
+MIGRATE_DB_PASS=""
+MIGRATE_DB_USER=""
+MIGRATE_DB_NAME=""
+
+for dir in /root/proyectos/*/; do
+    if [ -f "\$dir/docker-compose.yml" ]; then
+        if grep -q "evoapicloud/evolution-api" "\$dir/docker-compose.yml" 2>/dev/null; then
+            OLD_PROJECT=\$(basename "\$dir")
+            echo -e "\${GREEN}✓ Encontrada Evolution API en: \$OLD_PROJECT\${NC}"
+            MIGRATE_FROM="\$dir"
+
+            # Extraer credenciales de la DB existente
+            MIGRATE_DB_PASS=\$(grep -oP 'POSTGRES_PASSWORD=\\K[^\\s]+' "\$dir/docker-compose.yml" 2>/dev/null || echo "")
+            MIGRATE_DB_USER=\$(grep -oP 'POSTGRES_USER=\\K[^\\s]+' "\$dir/docker-compose.yml" 2>/dev/null || echo "")
+            MIGRATE_DB_NAME=\$(grep -oP 'POSTGRES_DB=\\K[^\\s]+' "\$dir/docker-compose.yml" 2>/dev/null || echo "")
+
+            # Detener Evolution API
+            echo -e "\${YELLOW}⏹️  Deteniendo Evolution API...\${NC}"
+            cd "\$dir"
+            docker compose stop evolution 2>/dev/null || true
+            echo -e "\${GREEN}✓ Evolution API detenida (base de datos preservada)\${NC}"
+            break
+        fi
+    fi
+done
+
+if [ -z "\$MIGRATE_FROM" ]; then
+    echo -e "\${YELLOW}⚠️  No se encontró Evolution API para migrar. Instalación limpia.\${NC}"
+fi
+` : '')
+    + portDetectionBlock(8080)
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Generando docker-compose.yml...\${NC}"
+
+API_KEY=\$(openssl rand -hex 16)
+DB_PASS=\$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16)
+
+${hasDomain ? `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  evolution-go:
+    image: evoapicloud/evolution-go:latest
+    container_name: \${PROJECT_NAME}_evolution_go
+    restart: unless-stopped
+    environment:
+      - SERVER_URL=https://\$DOMAIN
+      - AUTHENTICATION_API_KEY=\$API_KEY
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
+      - DEL_INSTANCE=false
+      - LANGUAGE=es
+    volumes:
+      - \${PROJECT_NAME}_evolution_go_instances:/evolution/instances
+      - \${PROJECT_NAME}_evolution_go_store:/evolution/store
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+    depends_on:
+      - postgres
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_network"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.entrypoints=web"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.middlewares=\${PROJECT_NAME}-redirect-https"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.entrypoints=websecure"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls=true"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls.certresolver=letsencrypt"
+      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.permanent=true"
+  postgres:
+    image: postgres:15-alpine
+    container_name: \${PROJECT_NAME}_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=\${PROJECT_NAME}_db
+      - POSTGRES_USER=\${PROJECT_NAME}_user
+      - POSTGRES_PASSWORD=\$DB_PASS
+    volumes:
+      - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
+    networks:
+      - \${PROJECT_NAME}_network
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+  traefik_network:
+    external: true
+volumes:
+  \${PROJECT_NAME}_evolution_go_instances:
+  \${PROJECT_NAME}_evolution_go_store:
+  \${PROJECT_NAME}_postgres_data:
+EOF
+` : `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  evolution-go:
+    image: evoapicloud/evolution-go:latest
+    container_name: \${PROJECT_NAME}_evolution_go
+    restart: unless-stopped
+    ports:
+      - "\$APP_PORT:8080"
+    environment:
+      - AUTHENTICATION_API_KEY=\$API_KEY
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
+      - DEL_INSTANCE=false
+      - LANGUAGE=es
+    volumes:
+      - \${PROJECT_NAME}_evolution_go_instances:/evolution/instances
+      - \${PROJECT_NAME}_evolution_go_store:/evolution/store
+    networks:
+      - \${PROJECT_NAME}_network
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:15-alpine
+    container_name: \${PROJECT_NAME}_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=\${PROJECT_NAME}_db
+      - POSTGRES_USER=\${PROJECT_NAME}_user
+      - POSTGRES_PASSWORD=\$DB_PASS
+    volumes:
+      - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
+    networks:
+      - \${PROJECT_NAME}_network
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+volumes:
+  \${PROJECT_NAME}_evolution_go_instances:
+  \${PROJECT_NAME}_evolution_go_store:
+  \${PROJECT_NAME}_postgres_data:
+EOF
+`}
+echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
+`
+    + subdomainSedBlock()
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Levantando contenedores...\${NC}"
+cd "\$PROJECT_DIR"
+docker compose up -d --remove-orphans
+sleep 10
+echo -e "\${GREEN}✓ Evolution Go está corriendo\${NC}"
+
+# Guardar credenciales
+set +e
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
+if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
+{
+echo "PROYECTO: \$PROJECT_NAME"
+echo "APP: Evolution Go"
+echo "URL: \$URL_ACCESS"
+echo ""
+echo "API KEY: \$API_KEY"
+echo ""
+echo "DATABASE: PostgreSQL"
+echo "DB Name: \${PROJECT_NAME}_db"
+echo "DB User: \${PROJECT_NAME}_user"
+echo "DB Pass: \$DB_PASS"
+echo ""
+echo "Documentación: \$URL_ACCESS/docs"
+} > "\$PROJECT_DIR/CREDENCIALES.txt"
+chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
+echo -e "\${GREEN}✓ Credenciales guardadas\${NC}"
+set -e
+
+echo ""
+echo -e "\${CYAN}"
+echo "============================================"
+echo "  ✅ Evolution Go INSTALADO EXITOSAMENTE"
+echo "============================================"
+echo -e "\${NC}"
+docker compose ps
+echo ""
+echo -e "\${GREEN}🌐 URL: \$URL_ACCESS\${NC}"
+echo -e "\${GREEN}🔑 API Key: \$API_KEY\${NC}"
+
+echo "JSON_START"
+echo "{"
+echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
+echo "  \\"domain\\": \\"\$DOMAIN\\","
+echo "  \\"project_type\\": \\"docker-app\\","
+echo "  \\"app_name\\": \\"Evolution Go\\","
 echo "  \\"url\\": \\"\$URL_ACCESS\\","
 echo "  \\"app_port\\": \\"\$APP_PORT\\","
 echo "  \\"api_key\\": \\"\$API_KEY\\","
@@ -903,4 +1127,387 @@ sleep 5
 echo -e "\${GREEN}✓ Portainer está corriendo\${NC}"
 `
     + jsonOutputBlock('Portainer');
+}
+
+// ============================================
+// CROWDSEC
+// ============================================
+function generateCrowdSecScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
+  return scriptHeader(projectName, 'CrowdSec', domain, hasDomain)
+    + traefikSetupBlock()
+    + projectCheckBlock(forceOverwrite)
+    + portDetectionBlock(8080)
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Generando configuración de CrowdSec...\${NC}"
+
+BOUNCER_KEY=\$(openssl rand -hex 16)
+
+# Crear directorio de configuración de acquis
+mkdir -p "\$PROJECT_DIR/acquis"
+
+# Configuración de adquisición para logs de Traefik
+cat > "\$PROJECT_DIR/acquis/traefik.yaml" <<'ACQUIS_TRAEFIK'
+source: docker
+docker_host: unix:///var/run/docker.sock
+container_name_regexp:
+  - "^traefik$"
+labels:
+  type: traefik
+ACQUIS_TRAEFIK
+
+# Configuración de adquisición para logs del sistema
+cat > "\$PROJECT_DIR/acquis/syslog.yaml" <<'ACQUIS_SYSLOG'
+filenames:
+  - /var/log/syslog
+  - /var/log/auth.log
+labels:
+  type: syslog
+ACQUIS_SYSLOG
+
+${hasDomain ? `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: \${PROJECT_NAME}_crowdsec
+    restart: unless-stopped
+    environment:
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors crowdsecurity/iptables
+      - BOUNCER_KEY_traefik=\$BOUNCER_KEY
+      - GID=\$(getent group docker | cut -d: -f3 || echo 999)
+    volumes:
+      - \${PROJECT_NAME}_crowdsec_config:/etc/crowdsec
+      - \${PROJECT_NAME}_crowdsec_data:/var/lib/crowdsec/data
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acquis/traefik.yaml:/etc/crowdsec/acquis.d/traefik.yaml:ro
+      - ./acquis/syslog.yaml:/etc/crowdsec/acquis.d/syslog.yaml:ro
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+
+  bouncer-traefik:
+    image: fbonalair/traefik-crowdsec-bouncer:latest
+    container_name: \${PROJECT_NAME}_bouncer
+    restart: unless-stopped
+    depends_on:
+      - crowdsec
+    environment:
+      - CROWDSEC_BOUNCER_API_KEY=\$BOUNCER_KEY
+      - CROWDSEC_AGENT_HOST=\${PROJECT_NAME}_crowdsec:8080
+      - GIN_MODE=release
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_network"
+      - "traefik.http.services.\${PROJECT_NAME}-bouncer.loadbalancer.server.port=8080"
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+  traefik_network:
+    external: true
+volumes:
+  \${PROJECT_NAME}_crowdsec_config:
+  \${PROJECT_NAME}_crowdsec_data:
+EOF
+` : `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: \${PROJECT_NAME}_crowdsec
+    restart: unless-stopped
+    environment:
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors crowdsecurity/iptables
+      - BOUNCER_KEY_traefik=\$BOUNCER_KEY
+      - GID=\$(getent group docker | cut -d: -f3 || echo 999)
+    ports:
+      - "\$APP_PORT:8080"
+    volumes:
+      - \${PROJECT_NAME}_crowdsec_config:/etc/crowdsec
+      - \${PROJECT_NAME}_crowdsec_data:/var/lib/crowdsec/data
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acquis/traefik.yaml:/etc/crowdsec/acquis.d/traefik.yaml:ro
+      - ./acquis/syslog.yaml:/etc/crowdsec/acquis.d/syslog.yaml:ro
+    networks:
+      - \${PROJECT_NAME}_network
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+volumes:
+  \${PROJECT_NAME}_crowdsec_config:
+  \${PROJECT_NAME}_crowdsec_data:
+EOF
+`}
+echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
+`
+    + subdomainSedBlock()
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Levantando contenedores...\${NC}"
+cd "\$PROJECT_DIR"
+docker compose up -d --remove-orphans
+echo -e "\${YELLOW}⏳ Esperando a que CrowdSec inicie y descargue colecciones (~30s)...\${NC}"
+sleep 30
+echo -e "\${GREEN}✓ CrowdSec está corriendo\${NC}"
+
+# Configurar middleware de CrowdSec en Traefik si hay dominio
+if [ "\$HAS_DOMAIN" = "true" ]; then
+    TRAEFIK_DIR="/root/traefik"
+    
+    # Agregar middleware de CrowdSec al traefik.yml si no existe
+    if ! grep -q "crowdsec" "\$TRAEFIK_DIR/traefik.yml" 2>/dev/null; then
+        cat >> "\$TRAEFIK_DIR/traefik.yml" <<CROWDSEC_MIDDLEWARE
+http:
+  middlewares:
+    crowdsec:
+      forwardAuth:
+        address: "http://\${PROJECT_NAME}_bouncer:8080/api/v1/forwardAuth"
+        trustForwardHeader: true
+CROWDSEC_MIDDLEWARE
+        echo -e "\${GREEN}✓ Middleware CrowdSec configurado en Traefik\${NC}"
+        
+        # Reiniciar Traefik para aplicar cambios
+        cd "\$TRAEFIK_DIR"
+        docker compose restart
+        sleep 5
+        cd "\$PROJECT_DIR"
+        echo -e "\${GREEN}✓ Traefik reiniciado con CrowdSec\${NC}"
+    else
+        echo -e "\${GREEN}✓ CrowdSec ya estaba configurado en Traefik\${NC}"
+    fi
+fi
+
+# Verificar estado
+echo ""
+echo -e "\${YELLOW}🔍 Verificando estado de CrowdSec...\${NC}"
+docker exec \${PROJECT_NAME}_crowdsec cscli hub list 2>/dev/null || echo "Hub list pendiente..."
+docker exec \${PROJECT_NAME}_crowdsec cscli bouncers list 2>/dev/null || echo "Bouncers pendiente..."
+
+# Guardar credenciales
+set +e
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
+if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
+{
+echo "PROYECTO: \$PROJECT_NAME"
+echo "APP: CrowdSec Security Engine"
+echo ""
+echo "BOUNCER API KEY: \$BOUNCER_KEY"
+echo ""
+echo "COMANDOS ÚTILES:"
+echo "  Ver decisiones activas: docker exec \${PROJECT_NAME}_crowdsec cscli decisions list"
+echo "  Ver alertas: docker exec \${PROJECT_NAME}_crowdsec cscli alerts list"
+echo "  Banear IP manual: docker exec \${PROJECT_NAME}_crowdsec cscli decisions add --ip <IP> --duration 24h --reason 'manual ban'"
+echo "  Desbanear IP: docker exec \${PROJECT_NAME}_crowdsec cscli decisions delete --ip <IP>"
+echo "  Ver bouncers: docker exec \${PROJECT_NAME}_crowdsec cscli bouncers list"
+echo "  Ver colecciones: docker exec \${PROJECT_NAME}_crowdsec cscli hub list"
+echo "  Ver métricas: docker exec \${PROJECT_NAME}_crowdsec cscli metrics"
+} > "\$PROJECT_DIR/CREDENCIALES.txt"
+chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
+echo -e "\${GREEN}✓ Credenciales y comandos guardados\${NC}"
+set -e
+
+echo ""
+echo -e "\${CYAN}"
+echo "============================================"
+echo "  ✅ CrowdSec INSTALADO EXITOSAMENTE"
+echo "============================================"
+echo -e "\${NC}"
+docker compose ps
+echo ""
+if [ "\$HAS_DOMAIN" = "true" ]; then
+    echo -e "\${GREEN}🛡️  CrowdSec protegiendo tráfico via Traefik\${NC}"
+    echo -e "\${YELLOW}ℹ️  Para proteger un servicio, añade el middleware crowdsec a sus labels de Traefik:\${NC}"
+    echo -e "\${BLUE}   traefik.http.routers.NOMBRE-https.middlewares=crowdsec\${NC}"
+else
+    echo -e "\${GREEN}🌐 API: \$URL_ACCESS\${NC}"
+fi
+echo -e "\${GREEN}🔑 Bouncer Key: \$BOUNCER_KEY\${NC}"
+
+echo "JSON_START"
+echo "{"
+echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
+echo "  \\"domain\\": \\"\$DOMAIN\\","
+echo "  \\"project_type\\": \\"docker-app\\","
+echo "  \\"app_name\\": \\"CrowdSec\\","
+echo "  \\"url\\": \\"\$URL_ACCESS\\","
+echo "  \\"app_port\\": \\"\$APP_PORT\\","
+echo "  \\"bouncer_key\\": \\"\$BOUNCER_KEY\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\""; else echo "  \\"ssl\\": \\"none\\""; fi
+echo "}"
+echo "JSON_END"
+`;
+}
+
+// ============================================
+// NTOPNG
+// ============================================
+function generateNtopngScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
+  return scriptHeader(projectName, 'ntopng', domain, hasDomain)
+    + traefikSetupBlock()
+    + projectCheckBlock(forceOverwrite)
+    + portDetectionBlock(3000)
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Generando configuración de ntopng...\${NC}"
+
+NTOPNG_PASS=\$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16)
+
+${hasDomain ? `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  ntopng:
+    image: ntop/ntopng:stable
+    container_name: \${PROJECT_NAME}_ntopng
+    restart: unless-stopped
+    environment:
+      - TZ=America/Bogota
+    volumes:
+      - \${PROJECT_NAME}_ntopng_data:/var/lib/ntopng
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    command: --community -d /var/lib/ntopng -i eth0 -w 0.0.0.0:3000 --http-prefix=/
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_network"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.entrypoints=web"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.middlewares=\${PROJECT_NAME}-redirect-https"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.entrypoints=websecure"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls=true"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls.certresolver=letsencrypt"
+      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.permanent=true"
+
+  redis:
+    image: redis:7-alpine
+    container_name: \${PROJECT_NAME}_redis
+    restart: unless-stopped
+    volumes:
+      - \${PROJECT_NAME}_redis_data:/data
+    networks:
+      - \${PROJECT_NAME}_network
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+  traefik_network:
+    external: true
+volumes:
+  \${PROJECT_NAME}_ntopng_data:
+  \${PROJECT_NAME}_redis_data:
+EOF
+` : `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  ntopng:
+    image: ntop/ntopng:stable
+    container_name: \${PROJECT_NAME}_ntopng
+    restart: unless-stopped
+    environment:
+      - TZ=America/Bogota
+    ports:
+      - "\$APP_PORT:3000"
+    volumes:
+      - \${PROJECT_NAME}_ntopng_data:/var/lib/ntopng
+    networks:
+      - \${PROJECT_NAME}_network
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    command: --community -d /var/lib/ntopng -i eth0 -w 0.0.0.0:3000
+
+  redis:
+    image: redis:7-alpine
+    container_name: \${PROJECT_NAME}_redis
+    restart: unless-stopped
+    volumes:
+      - \${PROJECT_NAME}_redis_data:/data
+    networks:
+      - \${PROJECT_NAME}_network
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+volumes:
+  \${PROJECT_NAME}_ntopng_data:
+  \${PROJECT_NAME}_redis_data:
+EOF
+`}
+echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
+`
+    + subdomainSedBlock()
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Levantando contenedores...\${NC}"
+cd "\$PROJECT_DIR"
+docker compose up -d --remove-orphans
+echo -e "\${YELLOW}⏳ Esperando a que ntopng inicie (~15s)...\${NC}"
+sleep 15
+echo -e "\${GREEN}✓ ntopng está corriendo\${NC}"
+
+# Guardar credenciales
+set +e
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
+if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
+{
+echo "PROYECTO: \$PROJECT_NAME"
+echo "APP: ntopng - Network Traffic Monitor"
+echo "URL: \$URL_ACCESS"
+echo ""
+echo "CREDENCIALES POR DEFECTO:"
+echo "  Usuario: admin"
+echo "  Password: admin (cambiar en el primer acceso)"
+echo ""
+echo "NOTAS:"
+echo "  - ntopng monitorea el tráfico de red en tiempo real"
+echo "  - Interfaz web con gráficos de flujo, hosts, protocolos"
+echo "  - Redis se usa como cache para mejor rendimiento"
+} > "\$PROJECT_DIR/CREDENCIALES.txt"
+chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
+echo -e "\${GREEN}✓ Credenciales guardadas\${NC}"
+set -e
+
+echo ""
+echo -e "\${CYAN}"
+echo "============================================"
+echo "  ✅ ntopng INSTALADO EXITOSAMENTE"
+echo "============================================"
+echo -e "\${NC}"
+docker compose ps
+echo ""
+echo -e "\${GREEN}🌐 URL: \$URL_ACCESS\${NC}"
+echo -e "\${YELLOW}👤 Usuario: admin | Password: admin\${NC}"
+echo -e "\${YELLOW}⚠️  Cambia la contraseña en el primer acceso\${NC}"
+
+echo "JSON_START"
+echo "{"
+echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
+echo "  \\"domain\\": \\"\$DOMAIN\\","
+echo "  \\"project_type\\": \\"docker-app\\","
+echo "  \\"app_name\\": \\"ntopng\\","
+echo "  \\"url\\": \\"\$URL_ACCESS\\","
+echo "  \\"app_port\\": \\"\$APP_PORT\\","
+echo "  \\"default_user\\": \\"admin\\","
+echo "  \\"default_pass\\": \\"admin\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\""; else echo "  \\"ssl\\": \\"none\\""; fi
+echo "}"
+echo "JSON_END"
+`;
 }
