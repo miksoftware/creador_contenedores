@@ -264,10 +264,22 @@ export default function DeployDashboard() {
                             if (msg.includes("JSON_START")) {
                                 isCapturingJson = true;
                                 jsonBuffer = "";
-                                continue;
+                                // Capture any content after JSON_START in the same message
+                                const afterStart = msg.substring(msg.indexOf("JSON_START") + "JSON_START".length);
+                                if (afterStart.trim()) jsonBuffer += afterStart + " ";
+                                // Handle JSON_END in the same message
+                                if (msg.includes("JSON_END")) {
+                                    isCapturingJson = false;
+                                    const endIdx = jsonBuffer.indexOf("JSON_END");
+                                    if (endIdx !== -1) jsonBuffer = jsonBuffer.substring(0, endIdx);
+                                } else {
+                                    continue;
+                                }
                             }
-                            if (msg.includes("JSON_END")) {
+                            if (msg.includes("JSON_END") && !msg.includes("JSON_START")) {
                                 isCapturingJson = false;
+                            }
+                            if (!isCapturingJson && jsonBuffer.trim()) {
                                 try {
                                     const cleanJson = jsonBuffer
                                         .replace(/\[\d+;?\d*m/g, '')
@@ -286,6 +298,7 @@ export default function DeployDashboard() {
                                 } catch (e) {
                                     console.error("Failed to parse result JSON:", e);
                                 }
+                                jsonBuffer = "";
                                 continue;
                             }
 
@@ -306,8 +319,19 @@ export default function DeployDashboard() {
                         if (line.includes("JSON_START")) {
                             isCapturingJson = true;
                             jsonBuffer = "";
+                            const afterStart = line.substring(line.indexOf("JSON_START") + "JSON_START".length);
+                            if (afterStart.trim()) jsonBuffer += afterStart + " ";
+                            if (line.includes("JSON_END")) {
+                                isCapturingJson = false;
+                                const endIdx = jsonBuffer.indexOf("JSON_END");
+                                if (endIdx !== -1) jsonBuffer = jsonBuffer.substring(0, endIdx);
+                            }
                         } else if (line.includes("JSON_END")) {
                             isCapturingJson = false;
+                        } else if (isCapturingJson) {
+                            jsonBuffer += line + " ";
+                        }
+                        if (!isCapturingJson && jsonBuffer.trim()) {
                             try {
                                 const cleanJson = jsonBuffer
                                     .replace(/\[\d+;?\d*m/g, '')
@@ -326,17 +350,20 @@ export default function DeployDashboard() {
                             } catch (e2) {
                                 console.error("Failed to parse raw JSON:", e2);
                             }
-                        } else if (isCapturingJson) {
-                            jsonBuffer += line + " ";
+                            jsonBuffer = "";
                         }
                     }
                 }
             }
 
+            if (timerRef.current) clearInterval(timerRef.current);
             if (hasError) {
                 setErrorMessage(detectedError || "Deployment failed");
-                if (timerRef.current) clearInterval(timerRef.current);
                 setStep("error");
+            } else {
+                // Stream ended without JSON markers — mark all steps done and show success
+                setDeploySteps(prev => prev.map(s => ({ ...s, status: 'done' as const })));
+                setStep("success");
             }
         } catch (error: any) {
             setLogs((prev) => [...prev, `❌ Error: ${error.message}`]);
@@ -1922,6 +1949,34 @@ export default function DeployDashboard() {
                                                         Volver
                                                     </motion.button>
                                                 </div>
+                                            </div>
+                                        )}
+
+                                        {/* ===== SUCCESS VIEW (no result) ===== */}
+                                        {step === 'success' && !result && (
+                                            <div className="flex-1 flex flex-col items-center justify-center text-center gap-4">
+                                                <motion.div
+                                                    initial={{ scale: 0 }}
+                                                    animate={{ scale: 1 }}
+                                                    transition={{ type: 'spring', stiffness: 200 }}
+                                                    className="w-14 h-14 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center mx-auto success-glow"
+                                                >
+                                                    <Sparkles className="w-7 h-7 text-white" />
+                                                </motion.div>
+                                                <div>
+                                                    <h3 className="text-lg font-bold text-white">¡Deploy Completado!</h3>
+                                                    <p className="text-xs text-gray-400 mt-1">Completado en {Math.floor(elapsedTime / 60)}m {elapsedTime % 60}s</p>
+                                                </div>
+                                                <motion.button
+                                                    whileHover={{ scale: 1.02 }}
+                                                    whileTap={{ scale: 0.98 }}
+                                                    onClick={() => { setStep("config"); setLogs([]); setResult(null); setDeploySteps(INITIAL_DEPLOY_STEPS.map(s => ({ ...s, status: 'pending' as const }))); }}
+                                                    className="mt-4 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 text-white"
+                                                    style={{ background: 'linear-gradient(135deg, #6366f1, #4f46e5)', border: '1px solid rgba(99,102,241,0.4)' }}
+                                                >
+                                                    <ArrowLeft className="w-4 h-4" />
+                                                    Volver
+                                                </motion.button>
                                             </div>
                                         )}
 

@@ -73,7 +73,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: admin@localhost
+      email: admin@traefik.local
       storage: /acme.json
       httpChallenge:
         entryPoint: web
@@ -89,7 +89,7 @@ name: traefik
 
 services:
   traefik:
-    image: traefik:latest
+    image: traefik:v3.6.1
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -97,6 +97,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      - DOCKER_API_VERSION=1.41
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/traefik.yml:ro

@@ -98,7 +98,7 @@ fi
 `;
 }
 
-function traefikSetupBlock(): string {
+function traefikSetupBlock(domain: string): string {
   return `
 # ============================================
 # VERIFICAR/INSTALAR TRAEFIK SI HAY DOMINIO
@@ -151,7 +151,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: admin@localhost
+      email: admin@${domain || 'localhost'}
       storage: /acme.json
       httpChallenge:
         entryPoint: web
@@ -161,7 +161,7 @@ TRAEFIK_CONFIG
 name: traefik
 services:
   traefik:
-    image: traefik:v3.4
+    image: traefik:v3.6.1
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -169,6 +169,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      - DOCKER_API_VERSION=1.41
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/traefik.yml:ro
@@ -196,6 +198,13 @@ DOCKER_COMPOSE
     else
         echo -e "\${GREEN}✓ Traefik ya está corriendo\${NC}"
         docker network create traefik_network 2>/dev/null || true
+        # Actualizar email ACME si aún tiene el valor incorrecto
+        if [ -f "/root/traefik/traefik.yml" ] && grep -q "admin@localhost" "/root/traefik/traefik.yml"; then
+            echo -e "\${YELLOW}⚠️  Actualizando email ACME en Traefik...\${NC}"
+            sed -i "s/email: admin@localhost/email: admin@\${DOMAIN}/" "/root/traefik/traefik.yml"
+            docker restart traefik 2>/dev/null || true
+            echo -e "\${GREEN}✓ Email ACME actualizado en Traefik\${NC}"
+        fi
     fi
 fi
 `;
@@ -315,7 +324,7 @@ echo "JSON_END"
 // ============================================
 function generateN8nScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'n8n', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(5678)
     + `
@@ -406,7 +415,7 @@ echo -e "\${GREEN}✓ n8n está corriendo\${NC}"
 // ============================================
 function generateOdooScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'Odoo', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(8069)
     + `
@@ -575,7 +584,7 @@ echo "JSON_END"
 // ============================================
 function generateEvolutionScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'Evolution API', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(8080)
     + `
@@ -753,7 +762,7 @@ echo "JSON_END"
 // ============================================
 function generateEvolutionGoScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean, migrateFromEvoApi?: boolean): string {
   return scriptHeader(projectName, 'Evolution Go', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + (migrateFromEvoApi ? `
 # ============================================
@@ -970,7 +979,7 @@ echo "JSON_END"
 // ============================================
 function generateUptimeKumaScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'Uptime Kuma', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(3001)
     + `
@@ -1051,7 +1060,7 @@ echo -e "\${GREEN}✓ Uptime Kuma está corriendo\${NC}"
 // ============================================
 function generatePortainerScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'Portainer', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(9000)
     + `
@@ -1134,7 +1143,7 @@ echo -e "\${GREEN}✓ Portainer está corriendo\${NC}"
 // ============================================
 function generateCrowdSecScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'CrowdSec', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(8080)
     + `
@@ -1352,7 +1361,7 @@ echo "JSON_END"
 // ============================================
 function generateNtopngScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
   return scriptHeader(projectName, 'ntopng', domain, hasDomain)
-    + traefikSetupBlock()
+    + traefikSetupBlock(domain)
     + projectCheckBlock(forceOverwrite)
     + portDetectionBlock(3000)
     + `
