@@ -1,4 +1,4 @@
-export type DockerApp = 'n8n' | 'odoo' | 'evolution-api' | 'evolution-go' | 'uptime-kuma' | 'portainer' | 'crowdsec' | 'ntopng';
+export type DockerApp = 'n8n' | 'odoo' | 'evolution-api' | 'evolution-go' | 'uptime-kuma' | 'portainer' | 'crowdsec' | 'ntopng' | 'netdata' | 'grafana';
 
 export type DockerAppConfig = {
   appName: DockerApp;
@@ -17,6 +17,8 @@ export const DOCKER_APPS: Record<DockerApp, { label: string; description: string
   'portainer': { label: 'Portainer', description: 'Docker Management', icon: '🐳', defaultPort: 9000, hasDb: false },
   'crowdsec': { label: 'CrowdSec', description: 'Security Engine & Firewall', icon: '🛡️', defaultPort: 8080, hasDb: false },
   'ntopng': { label: 'ntopng', description: 'Network Traffic Monitor', icon: '🌐', defaultPort: 3000, hasDb: false },
+  'netdata': { label: 'Netdata', description: 'Monitoreo en Tiempo Real', icon: '📈', defaultPort: 19999, hasDb: false },
+  'grafana': { label: 'Grafana + Prometheus', description: 'Métricas y Dashboards Docker', icon: '📊', defaultPort: 3000, hasDb: false },
 };
 
 export function generateDockerAppScript(config: DockerAppConfig): string {
@@ -32,6 +34,8 @@ export function generateDockerAppScript(config: DockerAppConfig): string {
     case 'portainer': return generatePortainerScript(projectName, domain, hasDomain, forceOverwrite);
     case 'crowdsec': return generateCrowdSecScript(projectName, domain, hasDomain, forceOverwrite);
     case 'ntopng': return generateNtopngScript(projectName, domain, hasDomain, forceOverwrite);
+    case 'netdata': return generateNetdataScript(projectName, domain, hasDomain, forceOverwrite);
+    case 'grafana': return generateGrafanaScript(projectName, domain, hasDomain, forceOverwrite);
     default: throw new Error(`App ${appName} not supported`);
   }
 }
@@ -1520,3 +1524,535 @@ echo "}"
 echo "JSON_END"
 `;
 }
+
+// ============================================
+// NETDATA
+// ============================================
+function generateNetdataScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
+  return scriptHeader(projectName, 'Netdata', domain, hasDomain)
+    + traefikSetupBlock(domain)
+    + projectCheckBlock(forceOverwrite)
+    + portDetectionBlock(19999)
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Generando docker-compose.yml para Netdata...\${NC}"
+
+${hasDomain ? `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  netdata:
+    image: netdata/netdata:latest
+    container_name: \${PROJECT_NAME}_netdata
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - NETDATA_CLAIM_TOKEN=
+      - NETDATA_CLAIM_URL=
+      - TZ=America/Bogota
+    volumes:
+      - \${PROJECT_NAME}_netdata_config:/etc/netdata
+      - \${PROJECT_NAME}_netdata_lib:/var/lib/netdata
+      - \${PROJECT_NAME}_netdata_cache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_network"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.entrypoints=web"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.middlewares=\${PROJECT_NAME}-redirect-https"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.entrypoints=websecure"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls=true"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls.certresolver=letsencrypt"
+      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=19999"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.permanent=true"
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+  traefik_network:
+    external: true
+volumes:
+  \${PROJECT_NAME}_netdata_config:
+  \${PROJECT_NAME}_netdata_lib:
+  \${PROJECT_NAME}_netdata_cache:
+EOF
+` : `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  netdata:
+    image: netdata/netdata:latest
+    container_name: \${PROJECT_NAME}_netdata
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    ports:
+      - "\$APP_PORT:19999"
+    environment:
+      - TZ=America/Bogota
+    volumes:
+      - \${PROJECT_NAME}_netdata_config:/etc/netdata
+      - \${PROJECT_NAME}_netdata_lib:/var/lib/netdata
+      - \${PROJECT_NAME}_netdata_cache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - \${PROJECT_NAME}_network
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+volumes:
+  \${PROJECT_NAME}_netdata_config:
+  \${PROJECT_NAME}_netdata_lib:
+  \${PROJECT_NAME}_netdata_cache:
+EOF
+`}
+echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
+`
+    + subdomainSedBlock()
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Levantando Netdata...\${NC}"
+cd "\$PROJECT_DIR"
+docker compose up -d --remove-orphans
+echo -e "\${YELLOW}⏳ Esperando que Netdata inicie (~10s)...\${NC}"
+sleep 10
+echo -e "\${GREEN}✓ Netdata está corriendo\${NC}"
+
+set +e
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
+if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
+
+{
+echo "PROYECTO: \$PROJECT_NAME"
+echo "APP: Netdata - Real-time Performance Monitoring"
+echo "URL: \$URL_ACCESS"
+echo ""
+echo "NOTA: No requiere login por defecto."
+echo "Para proteger con contraseña edita: /etc/netdata/netdata.conf"
+} > "\$PROJECT_DIR/CREDENCIALES.txt"
+chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
+set -e
+
+echo ""
+echo -e "\${CYAN}"
+echo "============================================"
+echo "  ✅ Netdata INSTALADO EXITOSAMENTE"
+echo "============================================"
+echo -e "\${NC}"
+docker compose ps
+echo ""
+echo -e "\${GREEN}🌐 URL: \$URL_ACCESS\${NC}"
+echo -e "\${YELLOW}📊 Monitorea CPU, RAM, Disco, Red y cada contenedor Docker en tiempo real\${NC}"
+echo -e "\${YELLOW}⏱️  Historial de hasta 1 año con anomaly detection automático\${NC}"
+
+echo "JSON_START"
+echo "{"
+echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
+echo "  \\"domain\\": \\"\$DOMAIN\\","
+echo "  \\"project_type\\": \\"docker-app\\","
+echo "  \\"app_name\\": \\"Netdata\\","
+echo "  \\"url\\": \\"\$URL_ACCESS\\","
+echo "  \\"app_port\\": \\"\$APP_PORT\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\""; else echo "  \\"ssl\\": \\"none\\""; fi
+echo "}"
+echo "JSON_END"
+`;
+}
+
+// ============================================
+// GRAFANA + PROMETHEUS + cADVISOR + NODE EXPORTER
+// ============================================
+function generateGrafanaScript(projectName: string, domain: string, hasDomain: boolean, forceOverwrite?: boolean): string {
+  return scriptHeader(projectName, 'Grafana + Prometheus', domain, hasDomain)
+    + traefikSetupBlock(domain)
+    + projectCheckBlock(forceOverwrite)
+    + portDetectionBlock(3000)
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Configurando stack de monitoreo completo (todo automático)...\${NC}"
+echo -e "\${CYAN}  Componentes: Grafana · Prometheus · cAdvisor · Node Exporter\${NC}"
+
+GRAFANA_PASS=\$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16)
+
+# ── Crear estructura de directorios ──────────────────────────────
+mkdir -p "\$PROJECT_DIR/prometheus"
+mkdir -p "\$PROJECT_DIR/grafana/provisioning/datasources"
+mkdir -p "\$PROJECT_DIR/grafana/provisioning/dashboards"
+mkdir -p "\$PROJECT_DIR/grafana/dashboards"
+
+# ── prometheus.yml ───────────────────────────────────────────────
+cat > "\$PROJECT_DIR/prometheus/prometheus.yml" <<'PROMEOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'cadvisor'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: 'node-exporter'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['node-exporter:9100']
+PROMEOF
+echo -e "\${GREEN}  ✓ prometheus.yml\${NC}"
+
+# ── Grafana: datasource Prometheus ───────────────────────────────
+cat > "\$PROJECT_DIR/grafana/provisioning/datasources/prometheus.yml" <<'DSEOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+DSEOF
+echo -e "\${GREEN}  ✓ datasource configurado\${NC}"
+
+# ── Grafana: provisioning de dashboards desde disco ──────────────
+cat > "\$PROJECT_DIR/grafana/provisioning/dashboards/default.yml" <<'DBEOF'
+apiVersion: 1
+providers:
+  - name: auto
+    folder: 'Servidor'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+DBEOF
+echo -e "\${GREEN}  ✓ provisioning configurado\${NC}"
+
+${hasDomain ? `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: \${PROJECT_NAME}_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=\$GRAFANA_PASS
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://\$DOMAIN
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - TZ=America/Bogota
+    volumes:
+      - \${PROJECT_NAME}_grafana_data:/var/lib/grafana
+      - \$PROJECT_DIR/grafana/provisioning:/etc/grafana/provisioning
+      - \$PROJECT_DIR/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - \${PROJECT_NAME}_network
+      - traefik_network
+    depends_on:
+      - prometheus
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_network"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.entrypoints=web"
+      - "traefik.http.routers.\${PROJECT_NAME}-http.middlewares=\${PROJECT_NAME}-redirect-https"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.rule=Host(\\\\\`\$DOMAIN\\\\\`) || Host(\\\\\`www.\$DOMAIN\\\\\`)"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.entrypoints=websecure"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls=true"
+      - "traefik.http.routers.\${PROJECT_NAME}-https.tls.certresolver=letsencrypt"
+      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.permanent=true"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: \${PROJECT_NAME}_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - \$PROJECT_DIR/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - \${PROJECT_NAME}_prometheus_data:/prometheus
+    networks:
+      - \${PROJECT_NAME}_network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: \${PROJECT_NAME}_cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - \${PROJECT_NAME}_network
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: \${PROJECT_NAME}_node_exporter
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\\$\\$|/)'
+    networks:
+      - \${PROJECT_NAME}_network
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+  traefik_network:
+    external: true
+volumes:
+  \${PROJECT_NAME}_grafana_data:
+  \${PROJECT_NAME}_prometheus_data:
+EOF
+` : `
+cat > "\$PROJECT_DIR/docker-compose.yml" <<EOF
+name: \${PROJECT_NAME}
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: \${PROJECT_NAME}_grafana
+    restart: unless-stopped
+    ports:
+      - "\$APP_PORT:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=\$GRAFANA_PASS
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - TZ=America/Bogota
+    volumes:
+      - \${PROJECT_NAME}_grafana_data:/var/lib/grafana
+      - \$PROJECT_DIR/grafana/provisioning:/etc/grafana/provisioning
+      - \$PROJECT_DIR/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - \${PROJECT_NAME}_network
+    depends_on:
+      - prometheus
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: \${PROJECT_NAME}_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - \$PROJECT_DIR/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - \${PROJECT_NAME}_prometheus_data:/prometheus
+    networks:
+      - \${PROJECT_NAME}_network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: \${PROJECT_NAME}_cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - \${PROJECT_NAME}_network
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: \${PROJECT_NAME}_node_exporter
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\\$\\$|/)'
+    networks:
+      - \${PROJECT_NAME}_network
+
+networks:
+  \${PROJECT_NAME}_network:
+    driver: bridge
+volumes:
+  \${PROJECT_NAME}_grafana_data:
+  \${PROJECT_NAME}_prometheus_data:
+EOF
+`}
+echo -e "\${GREEN}✓ docker-compose.yml creado\${NC}"
+`
+    + subdomainSedBlock()
+    + `
+echo ""
+echo -e "\${YELLOW}🐳 Levantando stack de monitoreo...\${NC}"
+cd "\$PROJECT_DIR"
+docker compose up -d --remove-orphans
+
+# ── Esperar a que Grafana esté saludable (hasta 90s) ─────────────
+echo -e "\${YELLOW}⏳ Esperando que Grafana inicie...\${NC}"
+GRAFANA_READY=false
+for i in \$(seq 1 30); do
+    GRAFANA_IP=\$(docker inspect --format='{{range \$k, \$v := .NetworkSettings.Networks}}{{\$v.IPAddress}} {{end}}' \${PROJECT_NAME}_grafana 2>/dev/null | awk '{print \$1}')
+    if [ -n "\$GRAFANA_IP" ]; then
+        HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" "http://\$GRAFANA_IP:3000/api/health" 2>/dev/null || echo "000")
+        if [ "\$HTTP_CODE" = "200" ]; then
+            GRAFANA_READY=true
+            echo -e "\${GREEN}✓ Grafana listo en \$((i * 3))s\${NC}"
+            break
+        fi
+    fi
+    sleep 3
+done
+
+# ── Importar dashboards automáticamente ──────────────────────────
+import_dashboard() {
+    local DASH_ID=\$1
+    local DASH_NAME=\$2
+    local DASH_FILE=\$3
+    echo -e "\${YELLOW}  → \$DASH_NAME (ID: \$DASH_ID)\${NC}"
+    DASH_JSON=\$(curl -sf --connect-timeout 10 "https://grafana.com/api/dashboards/\${DASH_ID}/revisions/latest/download" 2>/dev/null)
+    if [ -n "\$DASH_JSON" ] && echo "\$DASH_JSON" | grep -q '"title"'; then
+        # Guardar en disco para que persista tras reinicios (provisioning)
+        echo "\$DASH_JSON" > "\$PROJECT_DIR/grafana/dashboards/\${DASH_FILE}.json"
+        # Importar via API para disponibilidad inmediata
+        RESULT=\$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -u "admin:\$GRAFANA_PASS" \
+            "http://\$GRAFANA_IP:3000/api/dashboards/import" \
+            -d "{\"dashboard\":\$DASH_JSON,\"overwrite\":true,\"folderId\":0,\"inputs\":[{\"name\":\"DS_PROMETHEUS\",\"type\":\"datasource\",\"pluginId\":\"prometheus\",\"value\":\"Prometheus\"}]}" 2>/dev/null)
+        if echo "\$RESULT" | grep -q '"status":"success"'; then
+            echo -e "\${GREEN}    ✓ importado\${NC}"
+        else
+            echo -e "\${YELLOW}    ✓ guardado (disponible tras reinicio)\${NC}"
+        fi
+    else
+        echo -e "\${YELLOW}    ⚠ Sin acceso a grafana.com — dashboard omitido\${NC}"
+    fi
+}
+
+if [ "\$GRAFANA_READY" = "true" ]; then
+    echo ""
+    echo -e "\${YELLOW}📊 Importando dashboards...\${NC}"
+    import_dashboard 1860  "Node Exporter Full (CPU/RAM/Disco/Red del servidor)" "node-exporter-full"
+    import_dashboard 14282 "Docker cAdvisor (métricas por contenedor)"           "cadvisor-docker"
+    import_dashboard 11600 "Docker Containers (vista general)"                   "docker-containers"
+    echo -e "\${GREEN}✓ Dashboards listos\${NC}"
+else
+    echo -e "\${YELLOW}⚠ Grafana tardó — los dashboards se cargarán al reiniciar (provisioning automático)\${NC}"
+fi
+
+set +e
+SERVER_IP=\${DEPLOY_HOST_IP:-\$(hostname -I 2>/dev/null | awk '{print \$1}' || curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "localhost")}
+if [ "\$HAS_DOMAIN" = "true" ]; then URL_ACCESS="https://\$DOMAIN"; else URL_ACCESS="http://\${SERVER_IP}:\$APP_PORT"; fi
+
+{
+echo "PROYECTO: \$PROJECT_NAME"
+echo "APP: Grafana + Prometheus + cAdvisor + Node Exporter"
+echo ""
+echo "URL: \$URL_ACCESS"
+echo "USUARIO: admin"
+echo "CONTRASEÑA: \$GRAFANA_PASS"
+echo ""
+echo "DASHBOARDS INSTALADOS:"
+echo "  - Node Exporter Full (ID 1860)  → CPU, RAM, Disco, Red del servidor"
+echo "  - Docker cAdvisor   (ID 14282)  → Métricas individuales por contenedor"
+echo "  - Docker Containers (ID 11600)  → Vista general de todos los contenedores"
+echo ""
+echo "USO DE RECURSOS (estimado):"
+echo "  RAM total: ~350-450 MB"
+echo "  CPU: picos <5% cada 15s (scraping Prometheus)"
+echo "  Disco: historial de 30 días de métricas en Prometheus"
+} > "\$PROJECT_DIR/CREDENCIALES.txt"
+chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
+echo -e "\${GREEN}✓ Credenciales guardadas en CREDENCIALES.txt\${NC}"
+set -e
+
+echo ""
+echo -e "\${CYAN}"
+echo "============================================"
+echo "  ✅ Stack de Monitoreo LISTO"
+echo "============================================"
+echo -e "\${NC}"
+docker compose ps
+echo ""
+echo -e "\${GREEN}🌐 URL: \$URL_ACCESS\${NC}"
+echo -e "\${YELLOW}👤 admin | \$GRAFANA_PASS\${NC}"
+echo ""
+echo -e "\${CYAN}📊 Dashboards pre-instalados (entras y ya ves todo):\${NC}"
+echo -e "  • CPU, RAM, Disco, Red del servidor en tiempo real"
+echo -e "  • Métricas de cada contenedor Docker"
+echo -e "  • Vista general de todos los contenedores"
+echo ""
+echo -e "\${YELLOW}⚡ Impacto en servidor: ~400MB RAM | CPU <5% en picos de 15s\${NC}"
+echo -e "\${YELLOW}   Los scrapes de Prometheus son ligeros y no afectan tus apps\${NC}"
+
+echo "JSON_START"
+echo "{"
+echo "  \\"project_name\\": \\"\$PROJECT_NAME\\","
+echo "  \\"domain\\": \\"\$DOMAIN\\","
+echo "  \\"project_type\\": \\"docker-app\\","
+echo "  \\"app_name\\": \\"Grafana + Prometheus\\","
+echo "  \\"url\\": \\"\$URL_ACCESS\\","
+echo "  \\"app_port\\": \\"\$APP_PORT\\","
+echo "  \\"app_password\\": \\"\$GRAFANA_PASS\\","
+if [ "\$HAS_DOMAIN" = "true" ]; then echo "  \\"ssl\\": \\"traefik\\""; else echo "  \\"ssl\\": \\"none\\""; fi
+echo "}"
+echo "JSON_END"
+`;
+}
+

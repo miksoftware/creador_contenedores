@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
                                         size: parts[5] || '0',
                                         containersRunning: parseInt(parts[6]) || 0,
                                         containersTotal: parseInt(parts[7]) || 0,
+                                        hasRedis: parts[8] === 'true',
                                         containers: [],
                                     });
                                 }

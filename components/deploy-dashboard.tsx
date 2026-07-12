@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Terminal, CheckCircle2, Server, Globe, Shield, Database, ChevronRight, Activity, Cpu, Play, Rocket, Zap, XCircle, ArrowLeft, GitBranch, Code2, Upload, FileText, X, Box, Package, Copy, Check, Clock, RefreshCw, Sparkles, ExternalLink, Trash2, Settings, Loader2, AlertTriangle, Wifi } from "lucide-react";
+import { Terminal, CheckCircle2, Server, Globe, Shield, Database, ChevronRight, Activity, Cpu, Play, Rocket, Zap, XCircle, ArrowLeft, GitBranch, Code2, Upload, FileText, X, Box, Package, Copy, Check, Clock, RefreshCw, Sparkles, ExternalLink, Trash2, Settings, Loader2, AlertTriangle, Wifi, BookmarkPlus } from "lucide-react";
 import { DOCKER_APPS } from "@/lib/docker-apps-generator";
 import type { DockerApp } from "@/lib/docker-apps-generator";
 
@@ -21,7 +21,16 @@ interface VPSProject {
     size: string;
     containersRunning: number;
     containersTotal: number;
+    hasRedis: boolean;
     containers: { name: string; status: string }[];
+}
+
+interface SavedServer {
+    id: string;
+    name: string;
+    host: string;
+    username: string;
+    password: string;
 }
 
 interface DeployStep {
@@ -76,6 +85,16 @@ export default function DeployDashboard() {
     const [optimizeRamLogs, setOptimizeRamLogs] = useState<string[]>([]);
     const optimizeRamLogsEndRef = useRef<HTMLDivElement>(null);
 
+    // Remove Redis State
+    const [removingRedisProject, setRemovingRedisProject] = useState<string | null>(null);
+    const [removeRedisLogs, setRemoveRedisLogs] = useState<string[]>([]);
+    const removeRedisLogsEndRef = useRef<HTMLDivElement>(null);
+
+    // Saved Servers State
+    const [savedServers, setSavedServers] = useState<SavedServer[]>([]);
+    const [showSaveServerForm, setShowSaveServerForm] = useState(false);
+    const [saveServerName, setSaveServerName] = useState("");
+
     // Migration State
     const [migratingProject, setMigratingProject] = useState<{ name: string; type: string } | null>(null);
     const [targetCreds, setTargetCreds] = useState({ host: "", username: "root", password: "" });
@@ -94,6 +113,7 @@ export default function DeployDashboard() {
         gitRepoUrl: "", // URL del repositorio Git
         gitBranch: "", // Rama del repo (main, master, etc.)
         sqlFileContent: "", // Contenido del archivo SQL (solo PHP 7.3)
+        zipFileContent: "", // Contenido del ZIP del proyecto (solo PHP puro)
         withRedis: true, // Redis para Laravel
         withNodeBuild: true, // Compilar assets con Node.js para Laravel
     });
@@ -110,6 +130,10 @@ export default function DeployDashboard() {
     // SQL File state
     const [sqlFileName, setSqlFileName] = useState<string>("");
     const sqlInputRef = useRef<HTMLInputElement>(null);
+
+    // ZIP File state
+    const [zipFileName, setZipFileName] = useState<string>("");
+    const zipInputRef = useRef<HTMLInputElement>(null);
 
     // Credentials State
     const [creds, setCreds] = useState({
@@ -135,6 +159,10 @@ export default function DeployDashboard() {
         } else {
             setConfig(prev => ({ ...prev, withRedis: true, withNodeBuild: true }));
         }
+        if (config.type !== "php") {
+            setConfig(prev => ({ ...prev, zipFileContent: "" }));
+            setZipFileName("");
+        }
     }, [config.phpVersion, config.type]);
 
     // Handler para el archivo SQL
@@ -155,11 +183,37 @@ export default function DeployDashboard() {
         }
     };
 
+    const handleZipFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            if (!file.name.toLowerCase().endsWith('.zip')) {
+                alert('Por favor selecciona un archivo .zip');
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const dataUrl = event.target?.result as string;
+                const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+                setConfig(prev => ({ ...prev, zipFileContent: base64 }));
+                setZipFileName(file.name);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
     const removeSqlFile = () => {
         setConfig(prev => ({ ...prev, sqlFileContent: "" }));
         setSqlFileName("");
         if (sqlInputRef.current) {
             sqlInputRef.current.value = "";
+        }
+    };
+
+    const removeZipFile = () => {
+        setConfig(prev => ({ ...prev, zipFileContent: "" }));
+        setZipFileName("");
+        if (zipInputRef.current) {
+            zipInputRef.current.value = "";
         }
     };
 
@@ -514,6 +568,62 @@ export default function DeployDashboard() {
         optimizeRamLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [optimizeRamLogs]);
 
+    // Auto-scroll remove redis logs
+    useEffect(() => {
+        removeRedisLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [removeRedisLogs]);
+
+    const handleRemoveRedis = async (projectName: string) => {
+        if (!creds.host || !creds.password) return;
+        setRemovingRedisProject(projectName);
+        setRemoveRedisLogs([`🗑️ Eliminando Redis de ${projectName}...`]);
+        setDeleteLogs([]);
+        setOptimizeRamLogs([]);
+
+        try {
+            const res = await fetch('/api/projects/remove-redis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    host: creds.host,
+                    username: creds.username,
+                    password: creds.password,
+                    projectName,
+                }),
+            });
+
+            const reader = res.body?.getReader();
+            const decoder = new TextDecoder();
+
+            if (reader) {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n').filter(Boolean);
+                    for (const line of lines) {
+                        try {
+                            const parsed = JSON.parse(line);
+                            if (parsed.message) {
+                                const msg = parsed.message.replace(/\[\d+;?\d*m/g, '').replace(/\[0m/g, '').trim();
+                                if (msg) setRemoveRedisLogs(prev => [...prev, msg]);
+                            }
+                        } catch {
+                            const clean = line.replace(/\[\d+;?\d*m/g, '').replace(/\[0m/g, '').trim();
+                            if (clean) setRemoveRedisLogs(prev => [...prev, clean]);
+                        }
+                    }
+                }
+            }
+        } catch (error: any) {
+            setRemoveRedisLogs(prev => [...prev, `❌ Error: ${error.message}`]);
+        } finally {
+            setRemovingRedisProject(null);
+            // Refresh project list so hasRedis updates
+            handleListProjects();
+        }
+    };
+
     const handleOptimizeRam = async () => {
         if (!creds.host || !creds.password) return;
         setOptimizingRam(true);
@@ -652,6 +762,117 @@ export default function DeployDashboard() {
             setIsMigrating(false);
         }
     };
+
+    // Load saved servers from localStorage on mount
+    useEffect(() => {
+        try {
+            const stored = localStorage.getItem('vps_saved_servers');
+            if (stored) setSavedServers(JSON.parse(stored));
+        } catch {}
+    }, []);
+
+    const handleSaveServer = () => {
+        if (!creds.host || !creds.password || !saveServerName.trim()) return;
+        const newServer: SavedServer = {
+            id: Date.now().toString(),
+            name: saveServerName.trim(),
+            host: creds.host,
+            username: creds.username,
+            password: creds.password,
+        };
+        const updated = [...savedServers, newServer];
+        setSavedServers(updated);
+        try { localStorage.setItem('vps_saved_servers', JSON.stringify(updated)); } catch {}
+        setShowSaveServerForm(false);
+        setSaveServerName("");
+    };
+
+    const handleDeleteSavedServer = (id: string) => {
+        const updated = savedServers.filter(s => s.id !== id);
+        setSavedServers(updated);
+        try { localStorage.setItem('vps_saved_servers', JSON.stringify(updated)); } catch {}
+    };
+
+    const handleSelectServer = (server: SavedServer) => {
+        setCreds({ host: server.host, username: server.username, password: server.password });
+    };
+
+    const renderSavedServersPanel = () => (
+        <div className="mb-5">
+            {savedServers.length > 0 && (
+                <div className="mb-3">
+                    <p className="text-[11px] text-gray-500 mb-2 font-semibold uppercase tracking-wider">Servidores guardados</p>
+                    <div className="flex flex-wrap gap-2">
+                        {savedServers.map(server => (
+                            <div
+                                key={server.id}
+                                className="flex items-center gap-1.5 rounded-lg text-xs font-medium group transition-all"
+                                style={{
+                                    background: creds.host === server.host ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                                    border: creds.host === server.host ? '1px solid rgba(99,102,241,0.4)' : '1px solid rgba(255,255,255,0.08)',
+                                }}
+                            >
+                                <button
+                                    onClick={() => handleSelectServer(server)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5"
+                                    style={{ color: creds.host === server.host ? '#a5b4fc' : '#9ca3af' }}
+                                >
+                                    <div className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
+                                    <span className="truncate max-w-[140px]">{server.name}</span>
+                                    <span className="text-gray-600 font-mono text-[10px] hidden sm:inline">{server.host}</span>
+                                </button>
+                                <button
+                                    onClick={() => handleDeleteSavedServer(server.id)}
+                                    className="pr-2 opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-400 text-gray-600"
+                                    title="Eliminar servidor guardado"
+                                >
+                                    <X className="w-3 h-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+            {showSaveServerForm ? (
+                <div className="flex gap-2">
+                    <input
+                        type="text"
+                        placeholder="Nombre (ej: VPS Principal)"
+                        value={saveServerName}
+                        onChange={e => setSaveServerName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleSaveServer()}
+                        className="flex-1 px-3 py-1.5 rounded-lg text-white placeholder-gray-600 text-xs focus:outline-none"
+                        style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(99,102,241,0.35)' }}
+                        autoFocus
+                    />
+                    <button
+                        onClick={handleSaveServer}
+                        disabled={!saveServerName.trim() || !creds.host || !creds.password}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-white disabled:opacity-40 transition-opacity"
+                        style={{ background: 'linear-gradient(135deg, #6366f1, #4f46e5)' }}
+                    >
+                        Guardar
+                    </button>
+                    <button
+                        onClick={() => { setShowSaveServerForm(false); setSaveServerName(""); }}
+                        className="px-2 py-1.5 rounded-lg text-gray-400 hover:text-white transition-colors"
+                        style={{ background: 'rgba(255,255,255,0.05)' }}
+                    >
+                        <X className="w-3.5 h-3.5" />
+                    </button>
+                </div>
+            ) : (
+                <button
+                    onClick={() => setShowSaveServerForm(true)}
+                    disabled={!creds.host || !creds.password}
+                    className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-indigo-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                    <BookmarkPlus className="w-3.5 h-3.5" />
+                    Guardar servidor actual
+                </button>
+            )}
+        </div>
+    );
 
     return (
         <div className="w-full max-w-6xl mx-auto px-4 py-8 md:py-16">
@@ -1048,6 +1269,69 @@ export default function DeployDashboard() {
                                                 )}
                                             </AnimatePresence>
 
+                                            {/* ZIP del proyecto - Solo para PHP puro */}
+                                            <AnimatePresence>
+                                                {config.type === "php" && (
+                                                    <motion.div
+                                                        initial={{ opacity: 0, height: 0 }}
+                                                        animate={{ opacity: 1, height: "auto" }}
+                                                        exit={{ opacity: 0, height: 0 }}
+                                                        transition={{ duration: 0.3 }}
+                                                        className="space-y-1.5 overflow-hidden"
+                                                    >
+                                                        <label className="flex items-center gap-2 text-sm font-medium text-gray-400">
+                                                            <Package className="w-4 h-4 text-cyan-400" />
+                                                            ZIP del proyecto
+                                                            <span className="text-gray-600">(Opcional)</span>
+                                                        </label>
+
+                                                        {!zipFileName ? (
+                                                            <div
+                                                                onClick={() => zipInputRef.current?.click()}
+                                                                className="w-full px-4 py-4 rounded-xl cursor-pointer transition-all duration-300 flex items-center justify-center gap-3 hover:border-cyan-400/50"
+                                                                style={{
+                                                                    background: 'rgba(34, 211, 238, 0.05)',
+                                                                    border: '1px dashed rgba(34, 211, 238, 0.3)',
+                                                                }}
+                                                            >
+                                                                <Upload className="w-5 h-5 text-cyan-400" />
+                                                                <span className="text-sm text-gray-400">Click para subir un archivo .zip del proyecto</span>
+                                                            </div>
+                                                        ) : (
+                                                            <div
+                                                                className="w-full px-4 py-3 rounded-xl flex items-center justify-between"
+                                                                style={{
+                                                                    background: 'rgba(34, 211, 238, 0.1)',
+                                                                    border: '1px solid rgba(34, 211, 238, 0.3)',
+                                                                }}
+                                                            >
+                                                                <div className="flex items-center gap-2">
+                                                                    <FileText className="w-4 h-4 text-cyan-400" />
+                                                                    <span className="text-sm text-white font-mono">{zipFileName}</span>
+                                                                </div>
+                                                                <button
+                                                                    onClick={removeZipFile}
+                                                                    className="p-1 rounded-lg hover:bg-red-500/20 transition-colors"
+                                                                >
+                                                                    <X className="w-4 h-4 text-red-400" />
+                                                                </button>
+                                                            </div>
+                                                        )}
+
+                                                        <input
+                                                            ref={zipInputRef}
+                                                            type="file"
+                                                            accept=".zip"
+                                                            onChange={handleZipFileChange}
+                                                            className="hidden"
+                                                        />
+                                                        <p className="text-xs text-gray-500 mt-1">
+                                                            El contenido se extraerá en <code className="text-cyan-400/80">public/</code> antes de importar la base de datos.
+                                                        </p>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+
                                             {/* SQL File Upload - Solo para PHP 7.3 */}
                                             <AnimatePresence>
                                                 {config.phpVersion === "7.3" && (
@@ -1164,6 +1448,7 @@ export default function DeployDashboard() {
                                     </div>
 
                                     <div className="space-y-5 flex-1">
+                                        {renderSavedServersPanel()}
                                         {/* Host */}
                                         <div className="space-y-1.5">
                                             <label className="block text-sm font-medium text-gray-400">IP Address / Host</label>
@@ -1300,6 +1585,7 @@ export default function DeployDashboard() {
                                 {/* Connection form */}
                                 {!manageConnected ? (
                                     <div className="max-w-md mx-auto">
+                                        {renderSavedServersPanel()}
                                         <div className="space-y-4">
                                             <div>
                                                 <label className="text-xs font-semibold text-gray-400 mb-1 block">IP Address / Host</label>
@@ -1393,7 +1679,7 @@ export default function DeployDashboard() {
                                                 <motion.button
                                                     whileHover={{ scale: 1.05 }}
                                                     whileTap={{ scale: 0.95 }}
-                                                    onClick={() => { setManageConnected(false); setProjects([]); setDeleteLogs([]); setOptimizeRamLogs([]); }}
+                                                    onClick={() => { setManageConnected(false); setProjects([]); setDeleteLogs([]); setOptimizeRamLogs([]); setRemoveRedisLogs([]); }}
                                                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-400 flex items-center gap-1.5 transition-colors hover:text-white"
                                                     style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
                                                 >
@@ -1459,6 +1745,39 @@ export default function DeployDashboard() {
                                             </motion.div>
                                         )}
 
+                                        {/* Remove Redis logs panel */}
+                                        {removeRedisLogs.length > 0 && (
+                                            <motion.div
+                                                initial={{ opacity: 0, height: 0 }}
+                                                animate={{ opacity: 1, height: 'auto' }}
+                                                className="mb-6 rounded-xl overflow-hidden"
+                                                style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(239, 68, 68, 0.15)' }}
+                                            >
+                                                <div className="px-4 py-2 flex items-center justify-between" style={{ background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(220, 38, 38, 0.05))' }}>
+                                                    <span className="text-xs text-red-400 font-mono flex items-center gap-2">
+                                                        <Database className="w-3.5 h-3.5" /> Remove Redis Log
+                                                        {removingRedisProject && <Loader2 className="w-3 h-3 animate-spin text-red-500" />}
+                                                    </span>
+                                                    {!removingRedisProject && (
+                                                        <button onClick={() => setRemoveRedisLogs([])} className="text-gray-600 hover:text-gray-400 transition-colors"><X className="w-3.5 h-3.5" /></button>
+                                                    )}
+                                                </div>
+                                                <div className="p-4 max-h-60 overflow-y-auto custom-scrollbar font-mono text-xs">
+                                                    {removeRedisLogs.map((log, i) => {
+                                                        const isError = log.includes('❌') || log.includes('ERROR');
+                                                        const isSuccess = log.includes('✅') || log.includes('✓') || log.includes('DONE');
+                                                        const isSkip = log.includes('⚠️') || log.includes('SKIP');
+                                                        return (
+                                                            <div key={i} className={`mb-1.5 break-all ${isError ? 'text-red-400' : isSuccess ? 'text-green-400' : isSkip ? 'text-yellow-400' : 'text-gray-300'}`}>
+                                                                <span className="text-red-500 mr-2 select-none">❯</span>{log}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                    <div ref={removeRedisLogsEndRef} />
+                                                </div>
+                                            </motion.div>
+                                        )}
+
 
                                         {loadingProjects ? (
                                             <div className="flex flex-col items-center justify-center py-12">
@@ -1481,6 +1800,10 @@ export default function DeployDashboard() {
                                                         'docker-app-evolution': { label: 'Evolution', color: 'from-green-500 to-emerald-500', icon: '💬' },
                                                         'docker-app-uptime-kuma': { label: 'Uptime Kuma', color: 'from-teal-500 to-cyan-500', icon: '📊' },
                                                         'docker-app-portainer': { label: 'Portainer', color: 'from-sky-500 to-blue-500', icon: '🐳' },
+                                                        'docker-app-crowdsec': { label: 'CrowdSec', color: 'from-red-600 to-rose-600', icon: '🛡️' },
+                                                        'docker-app-ntopng': { label: 'ntopng', color: 'from-blue-600 to-cyan-600', icon: '🌐' },
+                                                        'docker-app-netdata': { label: 'Netdata', color: 'from-emerald-500 to-teal-500', icon: '📈' },
+                                                        'docker-app-grafana': { label: 'Grafana', color: 'from-orange-500 to-yellow-500', icon: '📊' },
                                                         'unknown': { label: 'Desconocido', color: 'from-gray-500 to-gray-600', icon: '📦' },
                                                     };
                                                     const typeInfo = typeLabels[project.type] || typeLabels['unknown'];
@@ -1613,6 +1936,28 @@ export default function DeployDashboard() {
                                                                  >
                                                                      <Upload className="w-3.5 h-3.5" /> Migrar
                                                                  </motion.button>
+                                                                )}
+
+                                                                {/* Remove Redis button — only if project has Redis */}
+                                                                {deleteConfirm !== project.name && project.hasRedis && (
+                                                                    <motion.button
+                                                                        whileHover={{ scale: 1.05 }}
+                                                                        whileTap={{ scale: 0.95 }}
+                                                                        onClick={() => handleRemoveRedis(project.name)}
+                                                                        disabled={removingRedisProject === project.name || isDeleting || isRestarting}
+                                                                        className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                                                                        style={{
+                                                                            background: 'rgba(239, 68, 68, 0.08)',
+                                                                            border: '1px solid rgba(239, 68, 68, 0.25)',
+                                                                            color: '#fca5a5',
+                                                                        }}
+                                                                    >
+                                                                        {removingRedisProject === project.name ? (
+                                                                            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Eliminando Redis...</>
+                                                                        ) : (
+                                                                            <><Database className="w-3.5 h-3.5" /> Quitar Redis</>
+                                                                        )}
+                                                                    </motion.button>
                                                                 )}
                                                             </div>
                                                         </motion.div>
@@ -1938,7 +2283,7 @@ export default function DeployDashboard() {
                                                     <motion.button
                                                         whileHover={{ scale: 1.02 }}
                                                         whileTap={{ scale: 0.98 }}
-                                                        onClick={() => { setStep('config'); setLogs([]); setResult(null); setErrorMessage(''); setSqlFileName(''); }}
+                                                        onClick={() => { setStep('config'); setLogs([]); setResult(null); setErrorMessage(''); setSqlFileName(''); setZipFileName(''); }}
                                                         className="flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 text-white"
                                                         style={{
                                                             background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
@@ -2110,7 +2455,7 @@ export default function DeployDashboard() {
                                                     transition={{ delay: 0.5 }}
                                                     whileHover={{ scale: 1.02 }}
                                                     whileTap={{ scale: 0.98 }}
-                                                    onClick={() => { setStep('config'); setLogs([]); setResult(null); setSqlFileName(''); }}
+                                                    onClick={() => { setStep('config'); setLogs([]); setResult(null); setSqlFileName(''); setZipFileName(''); }}
                                                     className="w-full mt-4 py-3 rounded-xl text-sm font-bold text-white flex items-center justify-center gap-2 flex-shrink-0"
                                                     style={{
                                                         background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',

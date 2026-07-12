@@ -7,6 +7,7 @@ export type ProjectConfig = {
   gitRepoUrl?: string; // URL HTTPS del repositorio Git
   gitBranch?: string; // Rama del repositorio (main, master, develop, etc.)
   sqlFileContent?: string; // Contenido del archivo SQL a importar (solo para PHP 7.3)
+  zipFileContent?: string; // Contenido ZIP del proyecto para PHP puro
   dbName?: string;
   dbUser?: string;
   dbPass?: string;
@@ -16,27 +17,57 @@ export type ProjectConfig = {
 };
 
 export function generateSetupScript(config: ProjectConfig): string {
-  const { projectName, domain, type, phpVersion, forceOverwrite, gitRepoUrl, sqlFileContent } = config;
+  const { projectName, domain, type, phpVersion, forceOverwrite, gitRepoUrl, sqlFileContent, zipFileContent } = config;
 
   const hasDomain = !!domain && domain !== 'localhost' && domain.trim() !== '';
   const hasGitRepo = !!gitRepoUrl && gitRepoUrl.trim() !== '';
   const hasSqlFile = !!sqlFileContent && sqlFileContent.trim() !== '';
+  const hasZipFile = !!zipFileContent && zipFileContent.trim() !== '';
   const mysqlVersion = '8.0';
 
   // Para PHP 7.3, usar la configuración específica basada en archivos_7.3
   if (phpVersion === '7.3') {
-    return generatePHP73Script(config, hasDomain, hasGitRepo, hasSqlFile);
+    return generatePHP73Script(config, hasDomain, hasGitRepo, hasSqlFile, hasZipFile);
   }
 
   // PHP 8.3 - Script original
-  return generatePHP83Script(config, hasDomain);
+  return generatePHP83Script(config, hasDomain, hasZipFile);
 }
 
-function generatePHP73Script(config: ProjectConfig, hasDomain: boolean, hasGitRepo: boolean, hasSqlFile: boolean): string {
-  const { projectName, domain, forceOverwrite, gitRepoUrl, sqlFileContent } = config;
+function zipImportBlock(base64ZipContent: string): string {
+  return `
+# ============================================
+# IMPORTAR ZIP DEL PROYECTO (si se proporcionó)
+# ============================================
+
+if [ "\$HAS_ZIP_FILE" = "true" ]; then
+    echo ""
+    echo -e "\${YELLOW}📦 Extrayendo proyecto ZIP en public/...\${NC}"
+
+    ZIP_FILE="\$PROJECT_DIR/import.zip"
+  printf '%s' "${base64ZipContent}" | base64 -d > "\$ZIP_FILE"
+
+    if ! command -v unzip &> /dev/null; then
+        echo -e "\${YELLOW}📦 unzip no encontrado. Instalando...\${NC}"
+        apt-get update -qq
+        apt-get install -y -qq unzip > /dev/null 2>&1
+    fi
+
+    mkdir -p "\$PROJECT_DIR/public"
+    unzip -oq "\$ZIP_FILE" -d "\$PROJECT_DIR/public"
+    rm -f "\$ZIP_FILE"
+
+    echo -e "\${GREEN}✓ ZIP del proyecto extraído en public/\${NC}"
+fi
+`;
+}
+
+function generatePHP73Script(config: ProjectConfig, hasDomain: boolean, hasGitRepo: boolean, hasSqlFile: boolean, hasZipFile: boolean): string {
+  const { projectName, domain, forceOverwrite, gitRepoUrl, sqlFileContent, zipFileContent } = config;
   
   // Codificar el contenido SQL en base64 para transferirlo de forma segura
   const base64SqlContent = hasSqlFile ? Buffer.from(sqlFileContent!).toString('base64') : '';
+  const base64ZipContent = hasZipFile ? zipFileContent! : '';
   
   return `#!/bin/bash
 
@@ -55,6 +86,7 @@ FORCE_OVERWRITE="${forceOverwrite ? 'true' : 'false'}"
 GIT_REPO_URL="${gitRepoUrl || ''}"
 HAS_GIT_REPO="${hasGitRepo}"
 HAS_SQL_FILE="${hasSqlFile}"
+HAS_ZIP_FILE="${hasZipFile}"
 
 # Colores
 GREEN='\\033[0;32m'
@@ -330,6 +362,8 @@ if [ "\$HAS_GIT_REPO" = "true" ]; then
     fi
 fi
 
+  ${hasZipFile ? zipImportBlock(base64ZipContent) : ''}
+
 # ============================================
 # CREAR Dockerfile PHP 7.3
 # ============================================
@@ -374,7 +408,6 @@ services:
       - ./php-config/custom.ini:/usr/local/etc/php/conf.d/custom.ini
     networks:
       - \${PROJECT_NAME}_network
-      - traefik_network
     restart: unless-stopped
     depends_on:
       - mysql
@@ -385,6 +418,7 @@ services:
     restart: unless-stopped
     command:
       - --default-authentication-plugin=mysql_native_password
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
       - --performance-schema=OFF
       - --innodb-buffer-pool-size=64M
       - --max-connections=50
@@ -459,6 +493,7 @@ services:
     restart: unless-stopped
     command:
       - --default-authentication-plugin=mysql_native_password
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
       - --performance-schema=OFF
       - --innodb-buffer-pool-size=64M
       - --max-connections=50
@@ -516,7 +551,7 @@ if [ "\$HAS_DOMAIN" = "true" ]; then
     cat > "\$PROJECT_DIR/nginx-traefik.conf" <<'NGINX_TRAEFIK'
 server {
     listen 80;
-    server_name _;
+  server_name ${domain || '_'};
     root /var/www/html;
     index index.php index.html;
 
@@ -533,23 +568,23 @@ server {
     rewrite ^/(.*)/$ /$1 permanent;
 
     location / {
-        try_files $uri $uri/ @rewrite;
+      try_files $uri $uri/ @rewrite;
     }
 
     location @rewrite {
-        if (-f $request_filename.html) {
-            rewrite ^(.+)$ $1.html last;
-        }
-        if (-f $request_filename.php) {
-            rewrite ^(.+)$ $1.php last;
-        }
-        return 404;
+      if (-f $request_filename.html) {
+        rewrite ^(.+)$ $1.html last;
+      }
+      if (-f $request_filename.php) {
+        rewrite ^(.+)$ $1.php last;
+      }
+      return 404;
     }
 
     location ~ \\.php$ {
         try_files $uri =404;
         fastcgi_split_path_info ^(.+\\.php)(/.+)$;
-        fastcgi_pass php:9000;
+        fastcgi_pass ${projectName}_php:9000;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param QUERY_STRING $query_string;
@@ -589,23 +624,23 @@ server {
     rewrite ^/(.*)/$ /$1 permanent;
 
     location / {
-        try_files $uri $uri/ @rewrite;
+      try_files $uri $uri/ @rewrite;
     }
 
     location @rewrite {
-        if (-f $request_filename.html) {
-            rewrite ^(.+)$ $1.html last;
-        }
-        if (-f $request_filename.php) {
-            rewrite ^(.+)$ $1.php last;
-        }
-        return 404;
+      if (-f $request_filename.html) {
+        rewrite ^(.+)$ $1.html last;
+      }
+      if (-f $request_filename.php) {
+        rewrite ^(.+)$ $1.php last;
+      }
+      return 404;
     }
 
     location ~ \\.php$ {
         try_files $uri =404;
         fastcgi_split_path_info ^(.+\\.php)(/.+)$;
-        fastcgi_pass php:9000;
+        fastcgi_pass ${projectName}_php:9000;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param QUERY_STRING $query_string;
@@ -950,14 +985,15 @@ echo "JSON_END"
 `;
 }
 
-function generatePHP83Script(config: ProjectConfig, hasDomain: boolean): string {
-  const { projectName, domain, type, forceOverwrite, gitRepoUrl, gitBranch, withRedis, withNodeBuild } = config;
+function generatePHP83Script(config: ProjectConfig, hasDomain: boolean, hasZipFile: boolean): string {
+  const { projectName, domain, type, forceOverwrite, gitRepoUrl, gitBranch, withRedis, withNodeBuild, zipFileContent } = config;
   const mysqlVersion = '8.0';
   const hasGitRepo = !!gitRepoUrl && gitRepoUrl.trim() !== '';
   const branch = gitBranch?.trim() || 'main';
   const isLaravel = type === 'laravel';
   const useRedis = isLaravel && withRedis;
   const useNodeBuild = isLaravel && withNodeBuild;
+  const base64ZipContent = hasZipFile ? zipFileContent! : '';
 
   return `#!/bin/bash
 
@@ -981,6 +1017,7 @@ HAS_GIT_REPO="${hasGitRepo}"
 IS_LARAVEL="${isLaravel}"
 USE_REDIS="${useRedis}"
 USE_NODE_BUILD="${useNodeBuild}"
+HAS_ZIP_FILE="${hasZipFile}"
 
 GREEN='\\033[0;32m'
 RED='\\033[0;31m'
@@ -999,6 +1036,9 @@ fi
 if [ "\$HAS_GIT_REPO" = "true" ]; then
     echo "  📦 Repositorio: \$GIT_REPO_URL"
     echo "  🔀 Rama: \$GIT_BRANCH"
+fi
+if [ "\$HAS_ZIP_FILE" = "true" ]; then
+  echo "  📁 Proyecto ZIP: habilitado"
 fi
 if [ "\$USE_REDIS" = "true" ]; then
     echo "  🔴 Redis: Incluido"
@@ -1256,6 +1296,8 @@ elif [ "\$HAS_GIT_REPO" = "true" ]; then
     fi
 fi
 
+${hasZipFile ? zipImportBlock(base64ZipContent) : ''}
+
 # ============================================
 # CREAR Dockerfile
 # ============================================
@@ -1363,7 +1405,6 @@ services:
       - ./php-config/custom.ini:/usr/local/etc/php/conf.d/custom.ini
     networks:
       - \${PROJECT_NAME}_network
-      - traefik_network
     restart: unless-stopped
     depends_on:
       - mysql\$([ "\$USE_REDIS" = "true" ] && echo "
@@ -1552,7 +1593,6 @@ services:
       - ./php-config/custom.ini:/usr/local/etc/php/conf.d/custom.ini
     networks:
       - \${PROJECT_NAME}_network
-      - traefik_network
     restart: unless-stopped
     depends_on:
       - mysql
@@ -1708,7 +1748,7 @@ server {
     location ~ \.php$ {
         try_files $uri =404;
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
-        fastcgi_pass php:9000;
+        fastcgi_pass ${projectName}_php:9000;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param PATH_INFO $fastcgi_path_info;
@@ -1767,7 +1807,7 @@ server {
     location ~ \\.php$ {
         try_files $uri =404;
         fastcgi_split_path_info ^(.+\\.php)(/.+)$;
-        fastcgi_pass php:9000;
+        fastcgi_pass ${projectName}_php:9000;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param QUERY_STRING $query_string;
@@ -1890,29 +1930,49 @@ ENVFILE
 
     # Actualizar valores en .env (en caso de que se copió de .env.example)
     cd "\$PROJECT_DIR/src"
-    
-    # Usar sed para establecer las variables de BD
-    sed -i "s|^DB_CONNECTION=.*|DB_CONNECTION=mysql|" .env
-    sed -i "s|^DB_HOST=.*|DB_HOST=mysql|" .env
-    sed -i "s|^DB_PORT=.*|DB_PORT=3306|" .env
-    sed -i "s|^DB_DATABASE=.*|DB_DATABASE=\${DB_NAME}|" .env
-    sed -i "s|^DB_USERNAME=.*|DB_USERNAME=\${DB_USER}|" .env
-    sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=\${DB_PASS}|" .env
-    sed -i "s|^APP_ENV=.*|APP_ENV=production|" .env
-    sed -i "s|^APP_DEBUG=.*|APP_DEBUG=false|" .env
-    
+
+    # Función set_env: reemplaza si la key existe, agrega al final si no existe
+    set_env() {
+        local key="\$1"
+        local val="\$2"
+        # Solo actuar si el valor no está vacío
+        [ -z "\$val" ] && return 0
+        if grep -q "^\${key}=" .env 2>/dev/null; then
+            sed -i "s|^\${key}=.*|\${key}=\${val}|" .env
+        else
+            echo "\${key}=\${val}" >> .env
+        fi
+    }
+
+    # Validar que las variables de BD no estén vacías antes de continuar
+    if [ -z "\$DB_NAME" ] || [ -z "\$DB_USER" ] || [ -z "\$DB_PASS" ]; then
+        echo -e "\${RED}❌ ERROR: Variables de base de datos vacías (DB_NAME='\$DB_NAME' DB_USER='\$DB_USER')\${NC}"
+        echo -e "\${RED}   El deploy no puede continuar sin credenciales de BD válidas.\${NC}"
+        exit 1
+    fi
+
+    # Establecer variables críticas de BD (reemplaza O agrega si no existen)
+    set_env "DB_CONNECTION" "mysql"
+    set_env "DB_HOST"       "mysql"
+    set_env "DB_PORT"       "3306"
+    set_env "DB_DATABASE"   "\${DB_NAME}"
+    set_env "DB_USERNAME"   "\${DB_USER}"
+    set_env "DB_PASSWORD"   "\${DB_PASS}"
+    set_env "APP_ENV"       "production"
+    set_env "APP_DEBUG"     "false"
+
     if [ "\$HAS_DOMAIN" = "true" ]; then
-        sed -i "s|^APP_URL=.*|APP_URL=https://\$DOMAIN|" .env
+        set_env "APP_URL" "https://\$DOMAIN"
     fi
-    
+
     if [ "\$USE_REDIS" = "true" ]; then
-        sed -i "s|^REDIS_HOST=.*|REDIS_HOST=redis|" .env
-        sed -i "s|^SESSION_DRIVER=.*|SESSION_DRIVER=redis|" .env
-        sed -i "s|^CACHE_STORE=.*|CACHE_STORE=redis|" .env 2>/dev/null || true
-        sed -i "s|^CACHE_DRIVER=.*|CACHE_DRIVER=redis|" .env 2>/dev/null || true
-        sed -i "s|^QUEUE_CONNECTION=.*|QUEUE_CONNECTION=redis|" .env
+        set_env "REDIS_HOST"       "redis"
+        set_env "SESSION_DRIVER"   "redis"
+        set_env "CACHE_STORE"      "redis"
+        set_env "CACHE_DRIVER"     "redis"
+        set_env "QUEUE_CONNECTION" "redis"
     fi
-    
+
     # Hacer .env escribible
     chmod 666 "\$PROJECT_DIR/src/.env"
     echo -e "\${GREEN}  ✓ .env configurado (permisos: 666)\${NC}"
@@ -1953,10 +2013,15 @@ ENVFILE
 
     # --- PASO 6: Migraciones ---
     echo -e "\${YELLOW}  [6/8] 🗄️  Ejecutando migraciones...\${NC}"
+    # Limpiar config cache primero para que Laravel use el .env recién configurado
+    docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan config:clear 2>/dev/null || true
+    MIGRATE_OK=false
     if docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan migrate --force 2>&1; then
+        MIGRATE_OK=true
         echo -e "\${GREEN}  ✓ Migraciones ejecutadas\${NC}"
     else
-        echo -e "\${YELLOW}  ⚠️  Las migraciones reportaron un problema (puede ser normal si no hay migraciones)\${NC}"
+        echo -e "\${YELLOW}  ⚠️  Migraciones no ejecutadas — el proyecto puede tener instalador web propio\${NC}"
+        echo -e "\${BLUE}  ℹ️  Accede a la URL y sigue el asistente de instalación para configurar la BD\${NC}"
     fi
 
     # --- PASO 7: Node.js Build (si aplica) ---
@@ -1979,10 +2044,22 @@ ENVFILE
 
     # --- PASO 8: Cache de Laravel (producción) ---
     echo -e "\${YELLOW}  [8/8] ⚡ Optimizando Laravel para producción...\${NC}"
-    docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan config:cache 2>/dev/null || true
-    docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan route:cache 2>/dev/null || true
-    docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan view:cache 2>/dev/null || true
-    docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan event:cache 2>/dev/null || true
+    if [ "\$MIGRATE_OK" = "true" ]; then
+        # Migraciones OK = BD configurada correctamente, se puede cachear todo
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan config:cache 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan route:cache 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan view:cache 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan event:cache 2>/dev/null || true
+        echo -e "\${GREEN}  ✓ Cache de producción generado\${NC}"
+    else
+        # Migraciones fallaron = proyecto con instalador web propio
+        # Limpiar todo el cache para que el instalador pueda leer/escribir .env libremente
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan config:clear 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan cache:clear 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan route:clear 2>/dev/null || true
+        docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan view:clear 2>/dev/null || true
+        echo -e "\${YELLOW}  ℹ️  Cache limpiado — accede a la URL y sigue el instalador web\${NC}"
+    fi
     
     # Publicar assets de Livewire al public (si existe)
     docker exec -w /var/www/html \${PROJECT_NAME}_php php artisan livewire:publish --assets 2>/dev/null || true

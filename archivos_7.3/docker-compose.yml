@@ -10,7 +10,6 @@ services:
       - ./php-config/custom.ini:/usr/local/etc/php/conf.d/custom.ini
     networks:
       - drogueriaaldemar_network
-      - traefik_network
     restart: unless-stopped
     depends_on:
       - mysql
@@ -19,7 +18,7 @@ services:
     image: mysql:8.0
     container_name: drogueriaaldemar_mysql
     restart: unless-stopped
-    command: --default-authentication-plugin=mysql_native_password
+    command: --default-authentication-plugin=mysql_native_password --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
     environment:
       MYSQL_ROOT_PASSWORD: root123
       MYSQL_DATABASE: drogueriaaldemar_db
