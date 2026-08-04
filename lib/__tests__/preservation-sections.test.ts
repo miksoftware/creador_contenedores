@@ -119,7 +119,7 @@ const projectNameArb = fc
   .string({ minLength: 1, maxLength: 50 })
   .filter((s) => /^[a-zA-Z0-9_-]+$/.test(s))
 
-const projectTypeArb = fc.constantFrom('php', 'laravel', 'docker-app-n8n', 'docker-app-odoo', 'docker-app-evolution')
+const projectTypeArb = fc.constantFrom('php', 'laravel', 'docker-app-n8n', 'docker-app-odoo', 'docker-app-evolution', 'docker-app-evolution-go')
 
 const domainArb = fc.oneof(
   fc.constant(null),

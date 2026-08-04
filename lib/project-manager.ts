@@ -36,6 +36,7 @@ export function generateListProjectsScript(): string {
         '        ',
         '        if echo "$CC" | grep -qi "n8nio/n8n"; then PTYPE="docker-app-n8n"',
         '        elif echo "$CC" | grep -qi "odoo"; then PTYPE="docker-app-odoo"',
+        '        elif echo "$CC" | grep -qi "evolution-go"; then PTYPE="docker-app-evolution-go"',
         '        elif echo "$CC" | grep -qi "evolution-api"; then PTYPE="docker-app-evolution"',
         '        elif echo "$CC" | grep -qi "uptime-kuma"; then PTYPE="docker-app-uptime-kuma"',
         '        elif echo "$CC" | grep -qi "portainer"; then PTYPE="docker-app-portainer"',

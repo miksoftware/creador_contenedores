@@ -12,7 +12,7 @@ export const DOCKER_APPS: Record<DockerApp, { label: string; description: string
   'n8n': { label: 'n8n', description: 'Workflow Automation', icon: '🔄', defaultPort: 5678, hasDb: false },
   'odoo': { label: 'Odoo', description: 'ERP & CRM', icon: '📊', defaultPort: 8069, hasDb: true },
   'evolution-api': { label: 'Evolution API', description: 'WhatsApp API', icon: '💬', defaultPort: 8080, hasDb: true },
-  'evolution-go': { label: 'Evolution Go', description: 'WhatsApp API (Go)', icon: '🚀', defaultPort: 8080, hasDb: true },
+  'evolution-go': { label: 'Evolution Go', description: 'WhatsApp API (Go)', icon: '🚀', defaultPort: 4000, hasDb: true },
   'uptime-kuma': { label: 'Uptime Kuma', description: 'Server Monitoring', icon: '📡', defaultPort: 3001, hasDb: false },
   'portainer': { label: 'Portainer', description: 'Docker Management', icon: '🐳', defaultPort: 9000, hasDb: false },
   'crowdsec': { label: 'CrowdSec', description: 'Security Engine & Firewall', icon: '🛡️', defaultPort: 8080, hasDb: false },
@@ -608,10 +608,30 @@ services:
     restart: unless-stopped
     environment:
       - SERVER_URL=https://\$DOMAIN
+      - SERVER_TYPE=https
+      - WPP_LID_MODE=false
       - AUTHENTICATION_API_KEY=\$API_KEY
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_crm
+      - DATABASE_ENABLED=true
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_LABELS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_GLOBAL_EVENTS=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/0
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - CONFIG_SESSION_PHONE_CLIENT=WhatsApp Web
+      - CONFIG_SESSION_PHONE_NAME=chrome
+      - CONFIG_SESSION_PHONE_VERSION=2.3000.1033105955
       - DEL_INSTANCE=false
       - LANGUAGE=es
     volumes:
@@ -622,6 +642,7 @@ services:
       - traefik_network
     depends_on:
       - postgres
+      - redis
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik_network"
@@ -647,6 +668,12 @@ services:
       - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
     networks:
       - \${PROJECT_NAME}_network
+  redis:
+    image: redis:7-alpine
+    container_name: \${PROJECT_NAME}_redis
+    restart: unless-stopped
+    networks:
+      - \${PROJECT_NAME}_network
 networks:
   \${PROJECT_NAME}_network:
     driver: bridge
@@ -668,10 +695,31 @@ services:
     ports:
       - "\$APP_PORT:8080"
     environment:
+      - SERVER_URL=http://\${DEPLOY_HOST_IP:-127.0.0.1}:\$APP_PORT
+      - SERVER_TYPE=http
+      - WPP_LID_MODE=false
       - AUTHENTICATION_API_KEY=\$API_KEY
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_crm
+      - DATABASE_ENABLED=true
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_LABELS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_GLOBAL_EVENTS=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/0
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - CONFIG_SESSION_PHONE_CLIENT=WhatsApp Web
+      - CONFIG_SESSION_PHONE_NAME=chrome
+      - CONFIG_SESSION_PHONE_VERSION=2.3000.1033105955
       - DEL_INSTANCE=false
       - LANGUAGE=es
     volumes:
@@ -681,6 +729,7 @@ services:
       - \${PROJECT_NAME}_network
     depends_on:
       - postgres
+      - redis
   postgres:
     image: postgres:15-alpine
     container_name: \${PROJECT_NAME}_postgres
@@ -691,6 +740,12 @@ services:
       - POSTGRES_PASSWORD=\$DB_PASS
     volumes:
       - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
+    networks:
+      - \${PROJECT_NAME}_network
+  redis:
+    image: redis:7-alpine
+    container_name: \${PROJECT_NAME}_redis
+    restart: unless-stopped
     networks:
       - \${PROJECT_NAME}_network
 networks:
@@ -825,15 +880,19 @@ services:
     restart: unless-stopped
     environment:
       - SERVER_URL=https://\$DOMAIN
-      - AUTHENTICATION_API_KEY=\$API_KEY
-      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-      - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
-      - DEL_INSTANCE=false
-      - LANGUAGE=es
+      - SERVER_PORT=4000
+      - CLIENT_NAME=evolution
+      - GLOBAL_API_KEY=\$API_KEY
+      - POSTGRES_AUTH_DB=postgresql://postgres:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_evogo_auth?sslmode=disable
+      - POSTGRES_USERS_DB=postgresql://postgres:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_evogo_users?sslmode=disable
+      - DATABASE_SAVE_MESSAGES=false
+      - WADEBUG=INFO
+      - LOGTYPE=console
+      - CONNECT_ON_STARTUP=false
+      - WEBHOOK_FILES=true
     volumes:
-      - \${PROJECT_NAME}_evolution_go_instances:/evolution/instances
-      - \${PROJECT_NAME}_evolution_go_store:/evolution/store
+      - \${PROJECT_NAME}_evolution_go_data:/app/dbdata
+      - \${PROJECT_NAME}_evolution_go_logs:/app/logs
     networks:
       - \${PROJECT_NAME}_network
       - traefik_network
@@ -849,7 +908,7 @@ services:
       - "traefik.http.routers.\${PROJECT_NAME}-https.entrypoints=websecure"
       - "traefik.http.routers.\${PROJECT_NAME}-https.tls=true"
       - "traefik.http.routers.\${PROJECT_NAME}-https.tls.certresolver=letsencrypt"
-      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=8080"
+      - "traefik.http.services.\${PROJECT_NAME}-service.loadbalancer.server.port=4000"
       - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.scheme=https"
       - "traefik.http.middlewares.\${PROJECT_NAME}-redirect-https.redirectscheme.permanent=true"
   postgres:
@@ -857,11 +916,12 @@ services:
     container_name: \${PROJECT_NAME}_postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_DB=\${PROJECT_NAME}_db
-      - POSTGRES_USER=\${PROJECT_NAME}_user
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=\$DB_PASS
     volumes:
       - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
       - \${PROJECT_NAME}_network
 networks:
@@ -870,8 +930,8 @@ networks:
   traefik_network:
     external: true
 volumes:
-  \${PROJECT_NAME}_evolution_go_instances:
-  \${PROJECT_NAME}_evolution_go_store:
+  \${PROJECT_NAME}_evolution_go_data:
+  \${PROJECT_NAME}_evolution_go_logs:
   \${PROJECT_NAME}_postgres_data:
 EOF
 ` : `
@@ -883,17 +943,21 @@ services:
     container_name: \${PROJECT_NAME}_evolution_go
     restart: unless-stopped
     ports:
-      - "\$APP_PORT:8080"
+      - "\$APP_PORT:4000"
     environment:
-      - AUTHENTICATION_API_KEY=\$API_KEY
-      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-      - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://\${PROJECT_NAME}_user:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_db?schema=public
-      - DEL_INSTANCE=false
-      - LANGUAGE=es
+      - SERVER_PORT=4000
+      - CLIENT_NAME=evolution
+      - GLOBAL_API_KEY=\$API_KEY
+      - POSTGRES_AUTH_DB=postgresql://postgres:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_evogo_auth?sslmode=disable
+      - POSTGRES_USERS_DB=postgresql://postgres:\$DB_PASS@postgres:5432/\${PROJECT_NAME}_evogo_users?sslmode=disable
+      - DATABASE_SAVE_MESSAGES=false
+      - WADEBUG=INFO
+      - LOGTYPE=console
+      - CONNECT_ON_STARTUP=false
+      - WEBHOOK_FILES=true
     volumes:
-      - \${PROJECT_NAME}_evolution_go_instances:/evolution/instances
-      - \${PROJECT_NAME}_evolution_go_store:/evolution/store
+      - \${PROJECT_NAME}_evolution_go_data:/app/dbdata
+      - \${PROJECT_NAME}_evolution_go_logs:/app/logs
     networks:
       - \${PROJECT_NAME}_network
     depends_on:
@@ -903,19 +967,20 @@ services:
     container_name: \${PROJECT_NAME}_postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_DB=\${PROJECT_NAME}_db
-      - POSTGRES_USER=\${PROJECT_NAME}_user
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=\$DB_PASS
     volumes:
       - \${PROJECT_NAME}_postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
       - \${PROJECT_NAME}_network
 networks:
   \${PROJECT_NAME}_network:
     driver: bridge
 volumes:
-  \${PROJECT_NAME}_evolution_go_instances:
-  \${PROJECT_NAME}_evolution_go_store:
+  \${PROJECT_NAME}_evolution_go_data:
+  \${PROJECT_NAME}_evolution_go_logs:
   \${PROJECT_NAME}_postgres_data:
 EOF
 `}
@@ -942,11 +1007,13 @@ echo ""
 echo "API KEY: \$API_KEY"
 echo ""
 echo "DATABASE: PostgreSQL"
-echo "DB Name: \${PROJECT_NAME}_db"
-echo "DB User: \${PROJECT_NAME}_user"
+echo "DB Name (Auth): \${PROJECT_NAME}_evogo_auth"
+echo "DB Name (Users): \${PROJECT_NAME}_evogo_users"
+echo "DB User: postgres"
 echo "DB Pass: \$DB_PASS"
 echo ""
-echo "Documentación: \$URL_ACCESS/docs"
+echo "Health Check: \$URL_ACCESS/server/ok"
+echo "Documentación: \$URL_ACCESS/swagger/index.html"
 } > "\$PROJECT_DIR/CREDENCIALES.txt"
 chmod 600 "\$PROJECT_DIR/CREDENCIALES.txt"
 echo -e "\${GREEN}✓ Credenciales guardadas\${NC}"

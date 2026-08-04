@@ -66,7 +66,7 @@ describe('Bug Condition — Extracción del tarball sin subdirectorio destino', 
    * and newDomain, the generated script must have the correct extraction pattern.
    */
   it('PBT: for any valid input, script must create PROJECT_DIR and extract with -C flag', () => {
-    const projectTypes = ['php', 'laravel', 'docker-app-n8n', 'docker-app-odoo', 'docker-app-evolution']
+    const projectTypes = ['php', 'laravel', 'docker-app-n8n', 'docker-app-odoo', 'docker-app-evolution', 'docker-app-evolution-go']
 
     fc.assert(
       fc.property(
