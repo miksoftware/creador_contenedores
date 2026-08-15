@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // Allow enough time for migration
+export const maxDuration = 600; // Allow enough time for migration
 
 export async function POST(req: NextRequest) {
     // Return a streaming response so the frontend can receive live logs
@@ -307,7 +307,13 @@ export async function POST(req: NextRequest) {
             // 4. Import on Target Server
             // ==========================================
             await writeLog(`\n📥 [4/4] Ejecutando importación en destino para proyecto: ${projectName}...`);
-            const importScript = generateImportProjectScript(projectName, projectType, newDomain);
+            const importScriptBase = generateImportProjectScript(
+                projectName,
+                projectType,
+                newDomain,
+                targetCreds.host,
+            );
+            const importScript = `export DEPLOY_HOST_IP="${targetCreds.host}"\n` + importScriptBase;
             
             await new Promise<void>((resolve, reject) => {
                 const importCmd = isTargetRoot ? 'bash --login -s' : 'sudo -S bash --login -s';

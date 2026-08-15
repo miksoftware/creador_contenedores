@@ -5,7 +5,7 @@
 /**
  * Genera un script bash que lista todos los proyectos en /root/proyectos/
  * Cada proyecto se imprime en una línea con formato:
- * PROJECT_LINE|name|type|phpVersion|domain|size|containersRunning|containersTotal
+ * PROJECT_LINE|name|type|phpVersion|domain|size|containersRunning|containersTotal|hasRedis|port
  */
 export function generateListProjectsScript(): string {
     // Use single quotes for the heredoc-style approach to avoid TS template interpolation issues
@@ -53,6 +53,13 @@ export function generateListProjectsScript(): string {
         '        fi',
         '        [ -z "$PDOMAIN" ] && PDOMAIN=""',
         '        ',
+        '        # Detect exposed host port for IP-only projects',
+        '        PPORT=""',
+        '        if [ -z "$PDOMAIN" ]; then',
+        '            PPORT=$(echo "$CC" | sed -n \'s/^[[:space:]]*-[[:space:]]*"\\?\\([0-9]\\+\\):\\([0-9]\\+\\).*$/\\1/p\' 2>/dev/null | head -1)',
+        '            [ -z "$PPORT" ] && PPORT=$(echo "$CC" | sed -n \'s/^[[:space:]]*-[[:space:]]*\\([0-9]\\+\\):\\([0-9]\\+\\).*$/\\1/p\' 2>/dev/null | head -1)',
+        '        fi',
+        '        ',
         '        cd "$dir" 2>/dev/null',
         '        CTOTAL=$(docker compose ps -q 2>/dev/null | wc -l)',
         '        CRUNNING=$(docker compose ps --filter "status=running" -q 2>/dev/null | wc -l)',
@@ -65,7 +72,7 @@ export function generateListProjectsScript(): string {
         '    PSIZE=$(du -sh "$dir" 2>/dev/null | awk \'{print $1}\')',
         '    [ -z "$PSIZE" ] && PSIZE="0"',
         '    ',
-        '    echo "PROJECT_LINE|$PNAME|$PTYPE|$PPHP|$PDOMAIN|$PSIZE|$CRUNNING|$CTOTAL|$HAS_REDIS"',
+        '    echo "PROJECT_LINE|$PNAME|$PTYPE|$PPHP|$PDOMAIN|$PSIZE|$CRUNNING|$CTOTAL|$HAS_REDIS|$PPORT"',
         'done',
         '',
         'echo "PROJECT_LIST_END"',
@@ -298,7 +305,19 @@ export function generateExportProjectScript(projectName: string, projectType: st
         'echo "Deteniendo contenedores..."',
         'docker compose down',
         'echo "Comprimiendo proyecto..."',
-        'tar -czf $EXPORT_DIR/$PROJECT_NAME.tar.gz .',
+        '',
+        '# Excluir el datadir local de la BD del respaldo: la BD viaja como dump SQL',
+        '# para que en el destino inicialice limpio y se restaure el dump con sus credenciales.',
+        'DB_VOL_PATHS=$(grep -oP \'^\\s*-\\s*[^:]*:/var/lib/(mysql|mariadb|postgresql)\' docker-compose.yml 2>/dev/null | sed -E \'s/^\\s*-\\s*([^:]*):.*/\\1/\' | tr -d \'"\' | tr -d "\'" | grep -v \'^\\${\' || true)',
+        'TAR_EXCLUDE_ARGS=()',
+        'if [ ! -z "$DB_VOL_PATHS" ]; then',
+        '    for d in $DB_VOL_PATHS; do',
+        '        echo "  Excluyendo datadir de BD del backup: $d"',
+        '        TAR_EXCLUDE_ARGS+=(--exclude="$d")',
+        '    done',
+        'fi',
+        '',
+        'tar -czf $EXPORT_DIR/$PROJECT_NAME.tar.gz "${TAR_EXCLUDE_ARGS[@]}" .',
         '',
         '# Clean up dump file after compression',
         'rm -f "$PROJECT_DIR/database_dump.sql"',
@@ -310,9 +329,32 @@ export function generateExportProjectScript(projectName: string, projectType: st
 }
 
 /**
+ * Genera un script bash para probar conexión SSH y verificar Docker
+ */
+export function generateTestConnectionScript(): string {
+    return [
+        '#!/bin/bash',
+        'export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin:$PATH"',
+        '[ -f /etc/profile ] && . /etc/profile > /dev/null 2>&1 || true',
+        '',
+        'HOSTNAME=$(hostname 2>/dev/null || echo "unknown")',
+        'SERVER_IP=$(hostname -I 2>/dev/null | awk \'{print $1}\')',
+        '[ -z "$SERVER_IP" ] && SERVER_IP=$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "")',
+        '',
+        'if ! command -v docker >/dev/null 2>&1; then',
+        '    echo "CONNECTION_ERROR|Docker no está instalado en este servidor"',
+        '    exit 1',
+        'fi',
+        '',
+        'DOCKER_VER=$(docker --version 2>/dev/null || echo "Docker instalado")',
+        'echo "CONNECTION_OK|$HOSTNAME|$SERVER_IP|$DOCKER_VER"',
+    ].join('\n');
+}
+
+/**
  * Genera un script bash para importar (extraer y configurar) un proyecto
  */
-export function generateImportProjectScript(projectName: string, projectType: string, newDomain: string | null): string {
+export function generateImportProjectScript(projectName: string, projectType: string, newDomain: string | null, targetHostIp?: string | null): string {
     const isLaravel = projectType === 'laravel';
     
     // Si es un proyecto web y viene con dominio nuevo, debemos inyectarlo.
@@ -634,13 +676,59 @@ export function generateImportProjectScript(projectName: string, projectType: st
         );
     } else {
         lines.push(
-            'echo -e "${YELLOW}[2/4] 🌐 Manteniendo configuraciones y dominio originales...${NC}"',
-            'cd "$PROJECT_DIR"'
+            'echo -e "${YELLOW}[2/4] 🌐 Manteniendo configuración IP:puerto (sin dominio)...${NC}"',
+            'cd "$PROJECT_DIR"',
+            '',
+            'TARGET_IP="${DEPLOY_HOST_IP:-}"',
+            'if [ -z "$TARGET_IP" ]; then',
+            `    TARGET_IP="${targetHostIp || ''}"`,
+            'fi',
+            '',
+            'if [ ! -z "$TARGET_IP" ]; then',
+            '    echo "Actualizando referencias de IP al servidor destino: $TARGET_IP"',
+            '    ',
+            '    # Detectar puerto expuesto en docker-compose',
+            '    EXPOSED_PORT=$(sed -n \'s/^[[:space:]]*-[[:space:]]*"\\?\\([0-9]\\+\\):\\([0-9]\\+\\).*$/\\1/p\' docker-compose.yml 2>/dev/null | head -1)',
+            '    [ -z "$EXPOSED_PORT" ] && EXPOSED_PORT=$(sed -n \'s/^[[:space:]]*-[[:space:]]*\\([0-9]\\+\\):\\([0-9]\\+\\).*$/\\1/p\' docker-compose.yml 2>/dev/null | head -1)',
+            '    ',
+            '    if [ -f ".env" ]; then',
+            '        if grep -q "^APP_URL=" .env && [ ! -z "$EXPOSED_PORT" ]; then',
+            '            sed -i "s|^APP_URL=.*|APP_URL=http://$TARGET_IP:$EXPOSED_PORT|g" .env',
+            '            echo -e "${GREEN}✓ APP_URL actualizado en .env${NC}"',
+            '        fi',
+            '        if grep -q "^SERVER_URL=" .env && [ ! -z "$EXPOSED_PORT" ]; then',
+            '            sed -i "s|^SERVER_URL=.*|SERVER_URL=http://$TARGET_IP:$EXPOSED_PORT|g" .env',
+            '            echo -e "${GREEN}✓ SERVER_URL actualizado en .env${NC}"',
+            '        fi',
+            '    fi',
+            '    ',
+            '    # Actualizar variables de entorno en docker-compose que referencian IPs',
+            '    if [ ! -z "$EXPOSED_PORT" ]; then',
+            '        sed -i "s|SERVER_URL=http://[^:]*:[0-9]*|SERVER_URL=http://$TARGET_IP:$EXPOSED_PORT|g" docker-compose.yml 2>/dev/null || true',
+            '        sed -i "s|http://[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}:|http://$TARGET_IP:|g" docker-compose.yml 2>/dev/null || true',
+            '    fi',
+            '    echo -e "${GREEN}✓ Configuración IP actualizada para $TARGET_IP${NC}"',
+            'else',
+            '    echo "Sin IP destino especificada. Se mantendrá la configuración original."',
+            'fi'
         );
     }
 
     lines.push(
         'echo -e "${YELLOW}[3/4] 🐳 Levantando contenedores docker...${NC}"',
+        '',
+        '# Limpiar datadir local de la BD (bind-mounts) para que la BD inicialice limpia',
+        '# y luego se restaure el dump SQL con las credenciales de su docker-compose.yml.',
+        'DB_VOL_PATHS=$(grep -oP \'^\\s*-\\s*[^:]*:/var/lib/(mysql|mariadb|postgresql)\' docker-compose.yml 2>/dev/null | sed -E \'s/^\\s*-\\s*([^:]*):.*/\\1/\' | tr -d \'"\' | tr -d "\'" | grep -v \'^\\${\' || true)',
+        'if [ ! -z "$DB_VOL_PATHS" ]; then',
+        '    for d in $DB_VOL_PATHS; do',
+        '        if [ -d "$d" ]; then',
+        '            echo -e "${YELLOW}  Eliminando datadir local de BD: $d${NC}"',
+        '            rm -rf "$d"',
+        '        fi',
+        '    done',
+        'fi',
+        '',
         'docker compose up -d',
         'echo -e "${GREEN}✓ Contenedores iniciados${NC}"',
         '',
@@ -655,27 +743,43 @@ export function generateImportProjectScript(projectName: string, projectType: st
         '            IS_POSTGRES=true',
         '        fi',
         '',
-        '        # Wait for database to actually be ready to accept connections',
+        '        # Detectar credenciales para verificar readiness correctamente',
+        '        if [ "$IS_POSTGRES" = true ]; then',
+        '            DB_USER=$(docker exec "$DB_CONTAINER" env | grep "POSTGRES_USER=" | cut -d= -f2 | tr -d \'\\r\' || echo "postgres")',
+        '            DB_NAME=$(docker exec "$DB_CONTAINER" env | grep "POSTGRES_DB=" | cut -d= -f2 | tr -d \'\\r\' || echo "postgres")',
+        '        else',
+        '            DB_PASS=$(docker exec "$DB_CONTAINER" env | grep -E "MYSQL_ROOT_PASSWORD=|MARIADB_ROOT_PASSWORD=" | cut -d= -f2 | tr -d \'\\r\' || true)',
+        '            DB_NAME=$(docker exec "$DB_CONTAINER" env | grep -E "MYSQL_DATABASE=|MARIADB_DATABASE=" | cut -d= -f2 | tr -d \'\\r\' || true)',
+        '        fi',
+        '',
+        '        # Esperar a que la BD acepte conexiones (una inicialización limpia de MySQL puede tardar ~4-5 min)',
         '        echo "⏳ Esperando a que la base de datos acepte conexiones..."',
         '        DB_READY=false',
-        '        for i in $(seq 1 30); do',
+        '        for i in $(seq 1 120); do',
         '            if [ "$IS_POSTGRES" = true ]; then',
         '                if docker exec "$DB_CONTAINER" pg_isready -q 2>/dev/null; then',
         '                    DB_READY=true',
         '                    break',
         '                fi',
         '            else',
-        '                if docker exec "$DB_CONTAINER" mysqladmin ping -h localhost --silent 2>/dev/null; then',
-        '                    DB_READY=true',
-        '                    break',
+        '                if [ ! -z "$DB_PASS" ]; then',
+        '                    if docker exec "$DB_CONTAINER" mysqladmin ping -h localhost -uroot -p"$DB_PASS" --silent >/dev/null 2>&1; then',
+        '                        DB_READY=true',
+        '                        break',
+        '                    fi',
+        '                else',
+        '                    if docker exec "$DB_CONTAINER" mysqladmin ping -h localhost --silent >/dev/null 2>&1; then',
+        '                        DB_READY=true',
+        '                        break',
+        '                    fi',
         '                fi',
         '            fi',
-        '            echo "  Intento $i/30 - BD no lista aún, esperando 3s..."',
+        '            echo "  Intento $i/120 - BD no lista aún, esperando 3s..."',
         '            sleep 3',
         '        done',
         '',
         '        if [ "$DB_READY" = false ]; then',
-        '            echo -e "${RED}⚠️ La BD no respondió después de 90s. Intentando restaurar de todos modos...${NC}"',
+        '            echo -e "${RED}⚠️ La BD no respondió después de 6 minutos. Intentando restaurar de todos modos...${NC}"',
         '        else',
         '            echo -e "${GREEN}✓ Base de datos lista para recibir conexiones.${NC}"',
         '        fi',
@@ -728,8 +832,12 @@ export function generateImportProjectScript(projectName: string, projectType: st
         '        echo -e "${RED}⚠️ Se encontró dump, pero no un contenedor de DB para restaurar.${NC}"',
         '    fi',
         '    ',
-        '    # Limpiar',
-        '    rm -f "$SQL_FILE"',
+        '    # Limpiar: conservar el dump si la restauración falló (para recuperación manual)',
+        '    if [ "$DB_RESTORE_OK" = true ]; then',
+        '        rm -f "$SQL_FILE"',
+        '    else',
+        '        echo -e "${RED}⚠️ La restauración falló. El dump se conservó en: $SQL_FILE — restáuralo manualmente con: docker exec -i $DB_CONTAINER mysql -u root "$DB_NAME" < $SQL_FILE${NC}"',
+        '    fi',
         '',
         '    # Limpiar migraciones de Prisma fallidas (si existen)',
         '    # Apps como Evolution API usan Prisma que rechaza iniciar si hay migraciones fallidas',

@@ -26,7 +26,10 @@ export async function POST(req: NextRequest) {
         }, 30000);
 
         sshClient.on('ready', () => {
-            sshClient.exec('bash --login -s', (err, stream) => {
+            const isRoot = username === 'root';
+            const command = isRoot ? 'bash --login -s' : 'sudo -S bash --login -s';
+
+            sshClient.exec(command, (err, stream) => {
                 if (err) {
                     clearTimeout(timeout);
                     sshClient.end();
@@ -46,7 +49,7 @@ export async function POST(req: NextRequest) {
                         for (const line of lines) {
                             if (line.startsWith('PROJECT_LINE|')) {
                                 const parts = line.split('|');
-                                // PROJECT_LINE|name|type|phpVersion|domain|size|containersRunning|containersTotal
+                                // PROJECT_LINE|name|type|phpVersion|domain|size|containersRunning|containersTotal|hasRedis|port
                                 if (parts.length >= 8) {
                                     projects.push({
                                         name: parts[1] || '',
@@ -57,6 +60,7 @@ export async function POST(req: NextRequest) {
                                         containersRunning: parseInt(parts[6]) || 0,
                                         containersTotal: parseInt(parts[7]) || 0,
                                         hasRedis: parts[8] === 'true',
+                                        port: parts[9] || '',
                                         containers: [],
                                     });
                                 }
@@ -73,6 +77,9 @@ export async function POST(req: NextRequest) {
                     // Ignore stderr (docker warnings, etc)
                 });
 
+                if (!isRoot) {
+                    stream.write(password + '\n');
+                }
                 stream.write(script);
                 stream.end();
             });

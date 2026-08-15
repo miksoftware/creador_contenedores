@@ -10,13 +10,14 @@ import type { DockerApp } from "@/lib/docker-apps-generator";
 type ProjectType = "php" | "laravel";
 type PHPVersion = "7.3" | "8.3";
 type StepType = "config" | "deploying" | "success" | "error";
-type DeployMode = "php" | "docker-app" | "manage";
+type DeployMode = "php" | "docker-app" | "manage" | "migrate-ip";
 
 interface VPSProject {
     name: string;
     type: string;
     phpVersion: string;
     domain: string;
+    port: string;
     path: string;
     size: string;
     containersRunning: number;
@@ -102,6 +103,14 @@ export default function DeployDashboard() {
     const [migrationLogs, setMigrationLogs] = useState<string[]>([]);
     const [isMigrating, setIsMigrating] = useState(false);
     const migrationLogsEndRef = useRef<HTMLDivElement>(null);
+
+    // IP Migration State
+    const [migrateIpConnected, setMigrateIpConnected] = useState(false);
+    const [selectedIpProject, setSelectedIpProject] = useState<VPSProject | null>(null);
+    const [targetConnectionStatus, setTargetConnectionStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [targetConnectionMessage, setTargetConnectionMessage] = useState('');
+    const [sourceConnectionStatus, setSourceConnectionStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [sourceConnectionMessage, setSourceConnectionMessage] = useState('');
 
     // Config State
     const [config, setConfig] = useState({
@@ -797,7 +806,176 @@ export default function DeployDashboard() {
         setCreds({ host: server.host, username: server.username, password: server.password });
     };
 
-    const renderSavedServersPanel = () => (
+    const handleSelectTargetServer = (server: SavedServer) => {
+        setTargetCreds({ host: server.host, username: server.username, password: server.password });
+        setTargetConnectionStatus('idle');
+        setTargetConnectionMessage('');
+    };
+
+    const isIpOnlyProject = (project: VPSProject) => !project.domain || project.domain.trim() === '';
+
+    const handleTestConnection = async (
+        testCreds: { host: string; username: string; password: string },
+        setStatus: (s: 'idle' | 'testing' | 'success' | 'error') => void,
+        setMessage: (m: string) => void,
+    ) => {
+        if (!testCreds.host || !testCreds.password) return false;
+        setStatus('testing');
+        setMessage('Probando conexión...');
+        try {
+            const res = await fetch('/api/projects/test-connection', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(testCreds),
+            });
+            const contentType = res.headers.get('content-type') || '';
+            let data: any;
+            if (!contentType.includes('application/json')) {
+                const text = await res.text();
+                setStatus('error');
+                setMessage(`✗ La API no devolvió JSON (HTTP ${res.status}). ¿Está disponible /api/projects/test-connection en este servidor?`);
+                return false;
+            }
+            data = await res.json();
+            if (data.ok) {
+                setStatus('success');
+                setMessage(`✓ Conectado a ${data.hostname || testCreds.host} (${data.docker || 'Docker OK'})`);
+                return true;
+            }
+            setStatus('error');
+            setMessage(`✗ ${data.error || 'Error de conexión'}`);
+            return false;
+        } catch (error: any) {
+            setStatus('error');
+            setMessage(`✗ ${error.message}`);
+            return false;
+        }
+    };
+
+    const handleConnectMigrateSource = async () => {
+        if (!creds.host || !creds.password) return;
+        setLoadingProjects(true);
+        setProjects([]);
+        setSelectedIpProject(null);
+        setTargetConnectionStatus('idle');
+        setTargetConnectionMessage('');
+        setMigrationLogs([]);
+        try {
+            const res = await fetch('/api/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    host: creds.host,
+                    username: creds.username,
+                    password: creds.password,
+                }),
+            });
+            const contentType = res.headers.get('content-type') || '';
+            const data = contentType.includes('application/json') ? await res.json() : null;
+            if (!data) {
+                setSourceConnectionStatus('error');
+                setSourceConnectionMessage(`✗ La API no devolvió JSON (HTTP ${res.status}). ¿Está disponible /api/projects en este servidor?`);
+                setMigrateIpConnected(false);
+            } else if (!res.ok) {
+                setSourceConnectionStatus('error');
+                setSourceConnectionMessage(`✗ ${data.error || 'Conexión fallida'}`);
+                setMigrateIpConnected(false);
+            } else if (data.projects) {
+                const ipProjects = data.projects.filter((p: VPSProject) => isIpOnlyProject(p));
+                setProjects(ipProjects);
+                setMigrateIpConnected(true);
+                setSourceConnectionStatus('success');
+                setSourceConnectionMessage(`✓ ${ipProjects.length} proyecto(s) por IP encontrado(s)`);
+            }
+        } catch (error: any) {
+            setSourceConnectionStatus('error');
+            setSourceConnectionMessage(`✗ ${error.message}`);
+            setMigrateIpConnected(false);
+        } finally {
+            setLoadingProjects(false);
+        }
+    };
+
+    const handleMigrateIp = async () => {
+        if (!selectedIpProject || !targetCreds.host || !targetCreds.password) return;
+        if (targetConnectionStatus !== 'success') return;
+
+        setIsMigrating(true);
+        setMigrationLogs([`🚀 Iniciando migración IP de ${selectedIpProject.name} → ${targetCreds.host}...`]);
+
+        try {
+            const res = await fetch('/api/projects/migrate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sourceCreds: {
+                        host: creds.host,
+                        username: creds.username,
+                        password: creds.password,
+                    },
+                    targetCreds,
+                    projectName: selectedIpProject.name,
+                    projectType: selectedIpProject.type,
+                    newDomain: null,
+                }),
+            });
+
+            if (!res.body) throw new Error("No response string from API");
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let jsonBuffer = "";
+            let isCapturingJson = false;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const text = decoder.decode(value);
+                const lines = text.split('\n');
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const parsed = JSON.parse(line);
+                        if (parsed.message) {
+                            setMigrationLogs(prev => [...prev, parsed.message]);
+                        }
+                    } catch {
+                        if (line.includes("JSON_START")) {
+                            isCapturingJson = true;
+                            jsonBuffer = "";
+                        } else if (line.includes("JSON_END")) {
+                            isCapturingJson = false;
+                            try {
+                                const cleanJson = jsonBuffer.replace(/\[\d+;?\d*m/g, '').replace(/\[0m/g, '').replace(/\s+/g, ' ').trim();
+                                const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
+                                if (jsonMatch) {
+                                    const parsed = JSON.parse(jsonMatch[0]);
+                                    if (parsed.message) {
+                                        setMigrationLogs(prev => [...prev, `✅ ${parsed.message}`]);
+                                    }
+                                }
+                            } catch {}
+                        } else if (isCapturingJson) {
+                            jsonBuffer += line + " ";
+                        } else {
+                            setMigrationLogs(prev => [...prev, line.replace(/\[[\d;]+m/g, '').trim()]);
+                        }
+                    }
+                }
+            }
+        } catch (error: any) {
+            setMigrationLogs(prev => [...prev, `❌ Error: ${error.message}`]);
+        } finally {
+            setIsMigrating(false);
+        }
+    };
+
+    const renderSavedServersPanel = (
+        activeCreds: { host: string; username: string; password: string } = creds,
+        onSelect: (server: SavedServer) => void = handleSelectServer,
+    ) => (
         <div className="mb-5">
             {savedServers.length > 0 && (
                 <div className="mb-3">
@@ -808,14 +986,14 @@ export default function DeployDashboard() {
                                 key={server.id}
                                 className="flex items-center gap-1.5 rounded-lg text-xs font-medium group transition-all"
                                 style={{
-                                    background: creds.host === server.host ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
-                                    border: creds.host === server.host ? '1px solid rgba(99,102,241,0.4)' : '1px solid rgba(255,255,255,0.08)',
+                                    background: activeCreds.host === server.host ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                                    border: activeCreds.host === server.host ? '1px solid rgba(99,102,241,0.4)' : '1px solid rgba(255,255,255,0.08)',
                                 }}
                             >
                                 <button
-                                    onClick={() => handleSelectServer(server)}
+                                    onClick={() => onSelect(server)}
                                     className="flex items-center gap-1.5 px-3 py-1.5"
-                                    style={{ color: creds.host === server.host ? '#a5b4fc' : '#9ca3af' }}
+                                    style={{ color: activeCreds.host === server.host ? '#a5b4fc' : '#9ca3af' }}
                                 >
                                     <div className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
                                     <span className="truncate max-w-[140px]">{server.name}</span>
@@ -900,13 +1078,27 @@ export default function DeployDashboard() {
                 </motion.div>
 
                 <h1 className="text-4xl md:text-6xl font-black tracking-tight mb-4">
-                    <span className="text-white">{deployMode === "manage" ? "Manage" : "Deploy Your"}</span>
+                    <span className="text-white">
+                        {deployMode === "manage" ? "Manage" : deployMode === "migrate-ip" ? "Migrate" : "Deploy Your"}
+                    </span>
                     <br />
-                    <span className="gradient-text">{deployMode === "manage" ? "Your Projects" : deployMode === "php" ? "PHP Projects" : "Docker Apps"}</span>
+                    <span className="gradient-text">
+                        {deployMode === "manage"
+                            ? "Your Projects"
+                            : deployMode === "migrate-ip"
+                                ? "IP Projects"
+                                : deployMode === "php"
+                                    ? "PHP Projects"
+                                    : "Docker Apps"}
+                    </span>
                 </h1>
 
                 <p className="text-base md:text-lg text-gray-400 max-w-xl mx-auto leading-relaxed mb-8 text-center">
-                    {deployMode === "manage" ? "Connect to your VPS and manage deployed projects." : <>Automated Docker deployment with Traefik SSL.<span className="text-gray-300"> No terminal required.</span></>}
+                    {deployMode === "manage"
+                        ? "Connect to your VPS and manage deployed projects."
+                        : deployMode === "migrate-ip"
+                            ? <>Migra proyectos que usan <span className="text-cyan-300">IP:puerto</span> a otro servidor. Solo proyectos sin dominio.</>
+                            : <>Automated Docker deployment with Traefik SSL.<span className="text-gray-300"> No terminal required.</span></>}
                 </p>
 
                 {/* Mode Selector Tabs */}
@@ -934,7 +1126,11 @@ export default function DeployDashboard() {
                         Docker Apps
                     </button>
                     <button
-                        onClick={() => setDeployMode("manage")}
+                        onClick={() => {
+                            setDeployMode("manage");
+                            setMigrateIpConnected(false);
+                            setSelectedIpProject(null);
+                        }}
                         className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300"
                         style={{
                             background: deployMode === "manage" ? 'linear-gradient(135deg, #f59e0b, #ef4444)' : 'transparent',
@@ -944,11 +1140,30 @@ export default function DeployDashboard() {
                         <Settings className="w-4 h-4" />
                         Administrar
                     </button>
+                    <button
+                        onClick={() => {
+                            setDeployMode("migrate-ip");
+                            setManageConnected(false);
+                            setSelectedIpProject(null);
+                            setTargetCreds({ host: "", username: "root", password: "" });
+                            setTargetConnectionStatus('idle');
+                            setSourceConnectionStatus('idle');
+                            setMigrationLogs([]);
+                        }}
+                        className="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300"
+                        style={{
+                            background: deployMode === "migrate-ip" ? 'linear-gradient(135deg, #06b6d4, #6366f1)' : 'transparent',
+                            color: deployMode === "migrate-ip" ? 'white' : '#9ca3af',
+                        }}
+                    >
+                        <Upload className="w-4 h-4" />
+                        Migrar IP
+                    </button>
                 </div>
             </motion.div>
 
             <AnimatePresence mode="wait">
-                {step === "config" && deployMode !== "manage" && (
+                {step === "config" && deployMode !== "manage" && deployMode !== "migrate-ip" && (
                     <motion.div
                         key="config"
                         initial={{ opacity: 0, y: 40 }}
@@ -1841,6 +2056,9 @@ export default function DeployDashboard() {
                                                                         {project.domain && (
                                                                             <span className="flex items-center gap-1 truncate"><Globe className="w-3 h-3" />{project.domain}</span>
                                                                         )}
+                                                                        {!project.domain && project.port && (
+                                                                            <span className="flex items-center gap-1 font-mono text-cyan-400/80">:{project.port}</span>
+                                                                        )}
                                                                         <span className="flex items-center gap-1">
                                                                             <Activity className={`w-3 h-3 ${project.containersRunning > 0 ? 'text-green-400' : 'text-gray-600'}`} />
                                                                             {project.containersRunning}/{project.containersTotal}
@@ -1916,8 +2134,8 @@ export default function DeployDashboard() {
                                                                     </motion.button>
                                                                 )}
                                                                 
-                                                                {/* Migrate button */}
-                                                                {deleteConfirm !== project.name && (
+                                                                {/* Migrate button — only for IP-only projects */}
+                                                                {deleteConfirm !== project.name && isIpOnlyProject(project) && (
                                                                      <motion.button
                                                                      whileHover={{ scale: 1.05 }}
                                                                      whileTap={{ scale: 0.95 }}
@@ -1968,6 +2186,269 @@ export default function DeployDashboard() {
                                         )}
                                     </div>
                                 )}
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ===== MIGRATE IP VIEW ===== */}
+                {step === "config" && deployMode === "migrate-ip" && (
+                    <motion.div
+                        key="migrate-ip"
+                        initial={{ opacity: 0, y: 40 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        transition={{ duration: 0.5 }}
+                    >
+                        <div
+                            className="rounded-3xl overflow-hidden"
+                            style={{
+                                background: 'linear-gradient(180deg, rgba(15, 23, 42, 0.8), rgba(15, 23, 42, 0.4))',
+                                border: '1px solid rgba(255, 255, 255, 0.08)',
+                                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
+                            }}
+                        >
+                            <div className="px-6 md:px-8 py-6 border-b border-white/5">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-500 flex items-center justify-center">
+                                        <Upload className="w-5 h-5 text-white" />
+                                    </div>
+                                    Migrar Proyecto por IP
+                                </h2>
+                                <p className="text-gray-400 text-sm mt-2 ml-[52px]">
+                                    Conecta al servidor origen, elige un proyecto sin dominio y transfiérelo a otro servidor.
+                                </p>
+                            </div>
+
+                            <div className="p-6 md:p-8">
+                                <div className="grid lg:grid-cols-2 gap-8">
+                                    {/* Left: Source + Project selection */}
+                                    <div className="space-y-6">
+                                        <div>
+                                            <h3 className="text-sm font-semibold text-cyan-300 mb-3 flex items-center gap-2">
+                                                <Server className="w-4 h-4" /> Servidor Origen
+                                            </h3>
+                                            {!migrateIpConnected ? (
+                                                <div className="max-w-md">
+                                                    {renderSavedServersPanel()}
+                                                    <div className="space-y-3">
+                                                        <input
+                                                            type="text"
+                                                            placeholder="IP del servidor origen"
+                                                            value={creds.host}
+                                                            onChange={(e) => { setCreds({ ...creds, host: e.target.value }); setSourceConnectionStatus('idle'); }}
+                                                            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-cyan-500/50 font-mono"
+                                                        />
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <input
+                                                                type="text"
+                                                                value={creds.username}
+                                                                onChange={(e) => setCreds({ ...creds, username: e.target.value })}
+                                                                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-mono focus:outline-none focus:border-cyan-500/50"
+                                                            />
+                                                            <input
+                                                                type="password"
+                                                                placeholder="Contraseña"
+                                                                value={creds.password}
+                                                                onChange={(e) => { setCreds({ ...creds, password: e.target.value }); setSourceConnectionStatus('idle'); }}
+                                                                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 text-sm font-mono focus:outline-none focus:border-cyan-500/50"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex gap-2 mt-4">
+                                                        <motion.button
+                                                            whileHover={{ scale: 1.02 }}
+                                                            whileTap={{ scale: 0.98 }}
+                                                            onClick={() => handleTestConnection(creds, setSourceConnectionStatus, setSourceConnectionMessage)}
+                                                            disabled={!creds.host || !creds.password || sourceConnectionStatus === 'testing'}
+                                                            className="flex-1 py-3 rounded-xl text-sm font-semibold text-cyan-300 disabled:opacity-50"
+                                                            style={{ background: 'rgba(6, 182, 212, 0.1)', border: '1px solid rgba(6, 182, 212, 0.3)' }}
+                                                        >
+                                                            {sourceConnectionStatus === 'testing' ? <><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Probando...</> : <><Wifi className="w-4 h-4 inline mr-1" /> Probar conexión</>}
+                                                        </motion.button>
+                                                        <motion.button
+                                                            whileHover={{ scale: 1.02 }}
+                                                            whileTap={{ scale: 0.98 }}
+                                                            onClick={handleConnectMigrateSource}
+                                                            disabled={loadingProjects || !creds.host || !creds.password}
+                                                            className="flex-1 py-3 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+                                                            style={{ background: 'linear-gradient(135deg, #06b6d4, #6366f1)' }}
+                                                        >
+                                                            {loadingProjects ? <><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Conectando...</> : 'Listar proyectos IP'}
+                                                        </motion.button>
+                                                    </div>
+                                                    {sourceConnectionMessage && (
+                                                        <p className={`text-xs mt-2 ${sourceConnectionStatus === 'success' ? 'text-green-400' : sourceConnectionStatus === 'error' ? 'text-red-400' : 'text-gray-400'}`}>
+                                                            {sourceConnectionMessage}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <div className="flex items-center justify-between mb-4">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
+                                                            <span className="text-sm text-gray-400">Origen: <span className="text-white font-mono">{creds.host}</span></span>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => { setMigrateIpConnected(false); setProjects([]); setSelectedIpProject(null); setMigrationLogs([]); }}
+                                                            className="text-xs text-gray-500 hover:text-white"
+                                                        >
+                                                            Cambiar servidor
+                                                        </button>
+                                                    </div>
+
+                                                    {loadingProjects ? (
+                                                        <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 text-cyan-500 animate-spin" /></div>
+                                                    ) : projects.length === 0 ? (
+                                                        <div className="text-center py-8 rounded-xl" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                                            <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                                                            <p className="text-gray-400 text-sm">No hay proyectos por IP en este servidor.</p>
+                                                            <p className="text-gray-600 text-xs mt-1">Solo se muestran proyectos sin dominio (acceso por IP:puerto).</p>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+                                                            {projects.map((project) => (
+                                                                <button
+                                                                    key={project.name}
+                                                                    onClick={() => {
+                                                                        setSelectedIpProject(project);
+                                                                        setTargetConnectionStatus('idle');
+                                                                        setTargetConnectionMessage('');
+                                                                        setMigrationLogs([]);
+                                                                    }}
+                                                                    disabled={isMigrating}
+                                                                    className="w-full text-left rounded-xl p-3 transition-all disabled:opacity-50"
+                                                                    style={{
+                                                                        background: selectedIpProject?.name === project.name ? 'rgba(6, 182, 212, 0.12)' : 'rgba(255,255,255,0.02)',
+                                                                        border: selectedIpProject?.name === project.name ? '1px solid rgba(6, 182, 212, 0.4)' : '1px solid rgba(255,255,255,0.06)',
+                                                                    }}
+                                                                >
+                                                                    <div className="flex items-center justify-between">
+                                                                        <span className="text-white font-semibold text-sm">{project.name}</span>
+                                                                        {project.port && (
+                                                                            <span className="text-xs font-mono text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded">:{project.port}</span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="text-xs text-gray-500 mt-1 flex gap-3">
+                                                                        <span>{project.type}</span>
+                                                                        <span>{project.containersRunning}/{project.containersTotal} contenedores</span>
+                                                                        <span>{project.size}</span>
+                                                                    </div>
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Right: Target + Migration */}
+                                    <div className="space-y-6">
+                                        <div>
+                                            <h3 className="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-2">
+                                                <Server className="w-4 h-4" /> Servidor Destino
+                                            </h3>
+                                            {!selectedIpProject ? (
+                                                <div className="rounded-xl p-8 text-center" style={{ background: 'rgba(255,255,255,0.02)', border: '1px dashed rgba(255,255,255,0.1)' }}>
+                                                    <ChevronRight className="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                                                    <p className="text-gray-500 text-sm">Selecciona un proyecto de la lista para configurar el destino.</p>
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-4">
+                                                    <div className="rounded-xl p-3 text-sm" style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                                                        <span className="text-gray-400">Migrando: </span>
+                                                        <span className="text-white font-bold">{selectedIpProject.name}</span>
+                                                        {selectedIpProject.port && (
+                                                            <span className="text-cyan-400 font-mono ml-2">→ http://{targetCreds.host || 'DESTINO'}:{selectedIpProject.port}</span>
+                                                        )}
+                                                    </div>
+
+                                                    {renderSavedServersPanel(targetCreds, handleSelectTargetServer)}
+
+                                                    <input
+                                                        type="text"
+                                                        placeholder="IP del servidor destino"
+                                                        disabled={isMigrating}
+                                                        value={targetCreds.host}
+                                                        onChange={(e) => { setTargetCreds({ ...targetCreds, host: e.target.value }); setTargetConnectionStatus('idle'); }}
+                                                        className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 text-sm font-mono focus:outline-none focus:border-indigo-500/50 disabled:opacity-50"
+                                                    />
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <input
+                                                            type="text"
+                                                            disabled={isMigrating}
+                                                            value={targetCreds.username}
+                                                            onChange={(e) => setTargetCreds({ ...targetCreds, username: e.target.value })}
+                                                            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-mono focus:outline-none focus:border-indigo-500/50 disabled:opacity-50"
+                                                        />
+                                                        <input
+                                                            type="password"
+                                                            placeholder="Contraseña"
+                                                            disabled={isMigrating}
+                                                            value={targetCreds.password}
+                                                            onChange={(e) => { setTargetCreds({ ...targetCreds, password: e.target.value }); setTargetConnectionStatus('idle'); }}
+                                                            className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 text-sm font-mono focus:outline-none focus:border-indigo-500/50 disabled:opacity-50"
+                                                        />
+                                                    </div>
+
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.02 }}
+                                                        whileTap={{ scale: 0.98 }}
+                                                        onClick={() => handleTestConnection(targetCreds, setTargetConnectionStatus, setTargetConnectionMessage)}
+                                                        disabled={isMigrating || !targetCreds.host || !targetCreds.password || targetConnectionStatus === 'testing'}
+                                                        className="w-full py-3 rounded-xl text-sm font-semibold text-indigo-300 disabled:opacity-50"
+                                                        style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.3)' }}
+                                                    >
+                                                        {targetConnectionStatus === 'testing' ? <><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Probando destino...</> : <><Wifi className="w-4 h-4 inline mr-1" /> Probar conexión destino</>}
+                                                    </motion.button>
+
+                                                    {targetConnectionMessage && (
+                                                        <p className={`text-xs ${targetConnectionStatus === 'success' ? 'text-green-400' : targetConnectionStatus === 'error' ? 'text-red-400' : 'text-gray-400'}`}>
+                                                            {targetConnectionMessage}
+                                                        </p>
+                                                    )}
+
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.02 }}
+                                                        whileTap={{ scale: 0.98 }}
+                                                        onClick={handleMigrateIp}
+                                                        disabled={isMigrating || targetConnectionStatus !== 'success' || !targetCreds.host || !targetCreds.password}
+                                                        className="w-full py-3.5 rounded-xl font-bold text-sm text-white disabled:opacity-50 flex items-center justify-center gap-2"
+                                                        style={{ background: 'linear-gradient(135deg, #a855f7, #6366f1)', boxShadow: '0 10px 30px -10px rgba(168, 85, 247, 0.4)' }}
+                                                    >
+                                                        {isMigrating ? <><Loader2 className="w-4 h-4 animate-spin" /> Migrando...</> : <><Rocket className="w-4 h-4" /> Iniciar Migración</>}
+                                                    </motion.button>
+
+                                                    {targetConnectionStatus !== 'success' && (
+                                                        <p className="text-[11px] text-gray-500 text-center">Debes probar la conexión al destino antes de migrar.</p>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Migration logs */}
+                                        {(migrationLogs.length > 0 || isMigrating) && (
+                                            <div className="rounded-xl overflow-hidden border border-white/10" style={{ background: 'rgba(0,0,0,0.5)' }}>
+                                                <div className="px-4 py-2 border-b border-white/10 flex items-center gap-2">
+                                                    <Terminal className="w-3.5 h-3.5 text-purple-400" />
+                                                    <span className="text-xs text-gray-400 font-mono">Migration Log</span>
+                                                </div>
+                                                <div className="p-4 max-h-48 overflow-y-auto custom-scrollbar font-mono text-xs">
+                                                    {migrationLogs.length === 0 ? (
+                                                        <div className="text-gray-600 italic">Esperando...</div>
+                                                    ) : migrationLogs.map((log, i) => (
+                                                        <div key={i} className={`mb-1 break-all ${log.includes('❌') ? 'text-red-400' : log.includes('✅') || log.includes('✓') ? 'text-green-400' : 'text-gray-300'}`}>
+                                                            <span className="text-purple-500 mr-1">❯</span>{log}
+                                                        </div>
+                                                    ))}
+                                                    <div ref={migrationLogsEndRef} />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </motion.div>
